@@ -1,0 +1,7 @@
+garminconnect==0.3.6
+curl_cffi
+pandas
+streamlit
+plotly
+anthropic
+python-dotenv

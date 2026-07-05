@@ -1,0 +1,9 @@
+.env
+.garmin_tokens/
+data/
+__pycache__/
+*.pyc
+.venv/
+venv/
+.streamlit/
+.claude/settings.local.json
