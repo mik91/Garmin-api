@@ -100,3 +100,20 @@ def ask(summary: dict, question: str) -> str:
         f"Question: {question}"
     )
     return _message(content)
+
+
+def chat(summary: dict, messages: list[dict]) -> str:
+    transcript = "\n".join(
+        f"{message['role'].title()}: {message['content']}"
+        for message in messages
+        if message.get("content")
+    )
+    content = (
+        "My Garmin dashboard context as JSON:\n\n"
+        f"{json.dumps(summary, indent=2, default=str)}\n\n"
+        "Continue this conversation. Answer the latest user message directly, "
+        "use the earlier turns for follow-up context, and do not repeat the "
+        "whole summary unless I ask for it.\n\n"
+        f"{transcript}"
+    )
+    return _message(content)

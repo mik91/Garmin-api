@@ -216,6 +216,79 @@ def activity_details_df(activities: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def clean_value(value):
+    if value is None or pd.isna(value):
+        return None
+    if hasattr(value, "item"):
+        return value.item()
+    return value
+
+
+def build_current_view_summary(
+    daily: pd.DataFrame,
+    sleep: pd.DataFrame,
+    activities: pd.DataFrame,
+    body: pd.DataFrame,
+    start: date,
+    end: date,
+    group_by: str,
+) -> dict:
+    summary = {
+        "date_range": {"start": start.isoformat(), "end": end.isoformat()},
+        "chart_grouping": group_by,
+    }
+
+    if not daily.empty:
+        summary["daily_stats"] = {
+            "days": int(daily["date"].nunique()),
+            "total_steps": clean_value(daily["steps"].sum(skipna=True)),
+            "avg_steps_per_day": clean_value(daily["steps"].mean(skipna=True)),
+            "avg_resting_hr": clean_value(daily["resting_hr"].mean(skipna=True)),
+            "avg_stress": clean_value(daily["stress_avg"].mean(skipna=True)),
+            "avg_body_battery_high": clean_value(daily["body_battery_high"].mean(skipna=True)),
+            "avg_body_battery_low": clean_value(daily["body_battery_low"].mean(skipna=True)),
+            "total_calories": clean_value(daily["calories"].sum(skipna=True)),
+        }
+
+    if not sleep.empty:
+        summary["sleep"] = {
+            "nights": int(sleep["date"].nunique()),
+            "avg_total_sleep_hours": clean_value(sleep["total_sleep_s"].mean(skipna=True) / 3600),
+            "avg_deep_hours": clean_value(sleep["deep_s"].mean(skipna=True) / 3600),
+            "avg_light_hours": clean_value(sleep["light_s"].mean(skipna=True) / 3600),
+            "avg_rem_hours": clean_value(sleep["rem_s"].mean(skipna=True) / 3600),
+            "avg_awake_hours": clean_value(sleep["awake_s"].mean(skipna=True) / 3600),
+            "avg_sleep_score": clean_value(sleep["sleep_score"].mean(skipna=True)),
+        }
+
+    if not activities.empty:
+        activity_summary = {}
+        for category, category_df in activities.groupby("category"):
+            activity_summary[category] = {
+                "count": int(len(category_df)),
+                "distance_km": clean_value(category_df["distance_m"].sum(skipna=True) / 1000),
+                "duration_hours": clean_value(category_df["duration_s"].sum(skipna=True) / 3600),
+                "calories": clean_value(category_df["calories"].sum(skipna=True)),
+                "elevation_gain_m": clean_value(category_df["elevation_gain_m"].sum(skipna=True)),
+                "avg_hr": clean_value(category_df["avg_hr"].mean(skipna=True)),
+                "max_hr": clean_value(category_df["max_hr"].max(skipna=True)),
+            }
+        summary["activities_by_type"] = activity_summary
+
+    if not body.empty:
+        summary["body_composition"] = {
+            "entries": int(len(body)),
+            "latest_weight_kg": clean_value(body["weight_kg"].dropna().iloc[-1])
+            if body["weight_kg"].notna().any()
+            else None,
+            "latest_body_fat_pct": clean_value(body["body_fat_pct"].dropna().iloc[-1])
+            if body["body_fat_pct"].notna().any()
+            else None,
+        }
+
+    return summary
+
+
 daily_stats = analysis.load_daily_stats()
 sleep_df = analysis.load_sleep()
 activities_df = analysis.ensure_activity_categories(analysis.load_activities())
@@ -661,32 +734,74 @@ with tab_ai:
         elif not ai_ready:
             st.warning(ai_insights.missing_config_message())
 
-        summary = analysis.build_summary()
+        summary = build_current_view_summary(
+            daily_filtered,
+            sleep_filtered,
+            activities_filtered,
+            body_filtered,
+            start_date,
+            end_date,
+            period,
+        )
         summary_json = json.dumps(summary, indent=2, default=str)
         summary_key = f"{provider}:{model}:{summary_json}"
 
-        if "ai_summary" not in st.session_state:
-            st.session_state.ai_summary = None
-        if st.session_state.get("ai_summary_key") != summary_key:
-            st.session_state.ai_summary = None
-            st.session_state.ai_summary_key = summary_key
+        if "ai_chat_messages" not in st.session_state:
+            st.session_state.ai_chat_messages = []
+        if st.session_state.get("ai_chat_summary_key") != summary_key:
+            st.session_state.ai_chat_messages = []
+            st.session_state.ai_chat_summary_key = summary_key
 
         st.caption(f"Provider: {provider} / Model: {model}")
         with st.expander("Aggregated summary that will be sent"):
             st.json(summary)
 
-        if st.button("Generate insights", disabled=not ai_ready):
+        cols = st.columns([1, 1, 5])
+        if cols[0].button("Start with insights", disabled=not ai_ready, use_container_width=True):
+            st.session_state.ai_chat_messages = [
+                {
+                    "role": "user",
+                    "content": "Give me a concise summary of this dashboard view.",
+                }
+            ]
             with st.spinner(f"Asking {provider} for a summary..."):
-                st.session_state.ai_summary = ai_insights.generate_summary(summary)
-                st.session_state.ai_summary_key = summary_key
-
-        if st.session_state.ai_summary:
-            st.markdown(st.session_state.ai_summary)
+                try:
+                    answer = ai_insights.chat(summary, st.session_state.ai_chat_messages)
+                except Exception as e:
+                    answer = f"I couldn't get an AI response for that summary: {e}"
+            st.session_state.ai_chat_messages.append({"role": "assistant", "content": answer})
+            st.rerun()
+        if cols[1].button("Clear chat", use_container_width=True):
+            st.session_state.ai_chat_messages = []
+            st.rerun()
 
         st.divider()
-        st.subheader("Ask a question about your data")
-        question = st.text_input("Question")
-        if st.button("Ask", disabled=not ai_ready) and question:
+        st.subheader("Chat about your Garmin data")
+
+        if not st.session_state.ai_chat_messages:
+            st.info("Ask a question below, or start with an AI summary of the current dashboard view.")
+
+        for message in st.session_state.ai_chat_messages:
+            with st.chat_message(message["role"]):
+                st.markdown(message["content"])
+
+        with st.form("ai_chat_form", clear_on_submit=True):
+            prompt = st.text_area(
+                "Question",
+                placeholder="Ask a follow-up about training, sleep, recovery, or trends",
+                label_visibility="collapsed",
+                disabled=not ai_ready,
+                height=90,
+            )
+            submitted = st.form_submit_button("Send", disabled=not ai_ready)
+
+        prompt = prompt.strip() if prompt else ""
+        if submitted and prompt:
+            st.session_state.ai_chat_messages.append({"role": "user", "content": prompt})
             with st.spinner("Thinking..."):
-                answer = ai_insights.ask(summary, question)
-            st.markdown(answer)
+                try:
+                    answer = ai_insights.chat(summary, st.session_state.ai_chat_messages)
+                except Exception as e:
+                    answer = f"I couldn't get an AI response for that question: {e}"
+            st.session_state.ai_chat_messages.append({"role": "assistant", "content": answer})
+            st.rerun()
