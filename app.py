@@ -102,6 +102,19 @@ def apply_date_filter(df: pd.DataFrame, column: str, start: date, end: date) -> 
     return df[(df[column] >= start_ts) & (df[column] <= end_ts)].copy()
 
 
+def current_period_bounds(period_name: str, anchor: date) -> tuple[date, date]:
+    anchor_ts = pd.Timestamp(anchor)
+    if period_name == "Daily":
+        return anchor, anchor
+    if period_name == "Weekly":
+        period = anchor_ts.to_period("W-SUN")
+    elif period_name == "Monthly":
+        period = anchor_ts.to_period("M")
+    else:
+        period = anchor_ts.to_period("Y")
+    return period.start_time.date(), period.end_time.date()
+
+
 def period_start(series: pd.Series, period_name: str) -> pd.Series:
     if period_name == "Daily":
         return series.dt.floor("D")
@@ -342,10 +355,20 @@ if not show_other and not activities_filtered.empty:
     activities_filtered = activities_filtered[activities_filtered["category"] != "Other"]
 body_filtered = apply_date_filter(body_df, "date", start_date, end_date)
 
+overview_start_date, overview_end_date = current_period_bounds(period, end_date)
+overview_daily = apply_date_filter(daily_stats, "date", overview_start_date, overview_end_date)
+overview_sleep = apply_date_filter(sleep_df, "date", overview_start_date, overview_end_date)
+overview_activities = apply_date_filter(
+    activities_df, "start_time", overview_start_date, overview_end_date
+)
+if not show_other and not overview_activities.empty:
+    overview_activities = overview_activities[overview_activities["category"] != "Other"]
+
 daily_period = aggregate_daily(daily_filtered, period)
 sleep_period = aggregate_sleep(sleep_filtered, period)
 activity_period = aggregate_activities(activities_filtered, period)
 activity_details = activity_details_df(activities_filtered)
+overview_daily_period = aggregate_daily(overview_daily, "Daily")
 
 st.title("Garmin Insights")
 st.caption(f"{start_date:%b %d, %Y} to {end_date:%b %d, %Y} | grouped {period.lower()}")
@@ -358,25 +381,30 @@ with tab_overview:
     if daily_stats.empty and activities_df.empty and sleep_df.empty:
         st.info("No data yet. Use 'Sync now' in the sidebar to pull data from Garmin Connect.")
     else:
-        total_steps = daily_filtered["steps"].sum(skipna=True) if not daily_filtered.empty else None
-        avg_steps = daily_filtered["steps"].mean(skipna=True) if not daily_filtered.empty else None
+        st.caption(
+            f"Overview period: {overview_start_date:%b %d, %Y} to "
+            f"{overview_end_date:%b %d, %Y}"
+        )
+
+        total_steps = overview_daily["steps"].sum(skipna=True) if not overview_daily.empty else None
+        avg_steps = overview_daily["steps"].mean(skipna=True) if not overview_daily.empty else None
         avg_sleep_h = (
-            sleep_filtered["total_sleep_s"].mean(skipna=True) / 3600
-            if not sleep_filtered.empty
+            overview_sleep["total_sleep_s"].mean(skipna=True) / 3600
+            if not overview_sleep.empty
             else None
         )
         avg_resting_hr = (
-            daily_filtered["resting_hr"].mean(skipna=True) if not daily_filtered.empty else None
+            overview_daily["resting_hr"].mean(skipna=True) if not overview_daily.empty else None
         )
-        activity_count = len(activities_filtered)
+        activity_count = len(overview_activities)
         distance_km = (
-            activities_filtered["distance_m"].sum(skipna=True) / 1000
-            if not activities_filtered.empty
+            overview_activities["distance_m"].sum(skipna=True) / 1000
+            if not overview_activities.empty
             else None
         )
         duration_h = (
-            activities_filtered["duration_s"].sum(skipna=True) / 3600
-            if not activities_filtered.empty
+            overview_activities["duration_s"].sum(skipna=True) / 3600
+            if not overview_activities.empty
             else None
         )
 
@@ -391,14 +419,14 @@ with tab_overview:
         cols = st.columns([1.05, 1])
         with cols[0]:
             st.subheader("Steps and resting HR")
-            if daily_period.empty:
-                st.info("No daily stats in this date range.")
+            if overview_daily_period.empty:
+                st.info("No daily stats in this overview period.")
             else:
                 fig = go.Figure()
                 fig.add_trace(
                     go.Bar(
-                        x=daily_period["period"],
-                        y=daily_period["steps"],
+                        x=overview_daily_period["period"],
+                        y=overview_daily_period["steps"],
                         name="Steps",
                         marker_color=BLUE,
                         yaxis="y",
@@ -406,8 +434,8 @@ with tab_overview:
                 )
                 fig.add_trace(
                     go.Scatter(
-                        x=daily_period["period"],
-                        y=daily_period["resting_hr"],
+                        x=overview_daily_period["period"],
+                        y=overview_daily_period["resting_hr"],
                         name="Resting HR",
                         mode="lines+markers",
                         line=dict(color=ROSE, width=2.5),
@@ -422,11 +450,11 @@ with tab_overview:
 
         with cols[1]:
             st.subheader("Activity mix")
-            if activities_filtered.empty:
-                st.info("No activities in this date range.")
+            if overview_activities.empty:
+                st.info("No activities in this overview period.")
             else:
                 mix = (
-                    activities_filtered.groupby("category", as_index=False)
+                    overview_activities.groupby("category", as_index=False)
                     .agg(distance_m=("distance_m", "sum"), count=("activity_id", "count"))
                     .sort_values("distance_m", ascending=False)
                 )
@@ -445,14 +473,14 @@ with tab_overview:
 
         cols = st.columns(3)
         cols[0].metric("Training time", fmt_number(duration_h, " h", 1))
-        if not activities_filtered.empty:
+        if not overview_activities.empty:
             cols[1].metric(
                 "Elevation gain",
-                fmt_number(activities_filtered["elevation_gain_m"].sum(skipna=True), " m"),
+                fmt_number(overview_activities["elevation_gain_m"].sum(skipna=True), " m"),
             )
             cols[2].metric(
                 "Avg workout HR",
-                fmt_number(activities_filtered["avg_hr"].mean(skipna=True), " bpm"),
+                fmt_number(overview_activities["avg_hr"].mean(skipna=True), " bpm"),
             )
         else:
             cols[1].metric("Elevation gain", "-")
