@@ -7,10 +7,12 @@ from garmin_ai import config
 SYSTEM_PROMPT = (
     "You are a personal health and fitness analyst. You are given aggregated "
     "trend statistics derived from the user's Garmin device data (resting heart "
-    "rate, sleep, steps, stress). Give a concise, honest narrative summary of "
-    "what the numbers show, calling out notable trends or changes. Do not "
-    "invent numbers that weren't given to you, and don't give medical diagnoses "
-    "-- suggest consulting a doctor for anything concerning."
+    "rate, sleep, steps, stress, and activity summaries by type such as running, "
+    "swimming, and cycling). Give a concise, honest narrative summary of what "
+    "the numbers show, calling out notable trends or changes. When activity "
+    "type summaries are present, distinguish between sports instead of blending "
+    "them together. Do not invent numbers that weren't given to you, and don't "
+    "give medical diagnoses -- suggest consulting a doctor for anything concerning."
 )
 
 

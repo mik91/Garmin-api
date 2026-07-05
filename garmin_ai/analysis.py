@@ -2,6 +2,27 @@ import pandas as pd
 
 from garmin_ai import db
 
+ACTIVITY_CATEGORIES = ("Running", "Swimming", "Cycling", "Other")
+
+
+def activity_category(activity_type: object) -> str:
+    type_text = str(activity_type or "").lower()
+    if any(term in type_text for term in ("run", "jog", "treadmill")):
+        return "Running"
+    if any(term in type_text for term in ("cycl", "bike", "biking", "mtb", "ebike")):
+        return "Cycling"
+    if any(term in type_text for term in ("swim", "pool", "open_water")):
+        return "Swimming"
+    return "Other"
+
+
+def ensure_activity_categories(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty or "category" in df.columns:
+        return df
+    df = df.copy()
+    df["category"] = df["type"].apply(activity_category)
+    return df
+
 
 def load_daily_stats() -> pd.DataFrame:
     with db.get_connection() as conn:
@@ -24,6 +45,7 @@ def load_activities() -> pd.DataFrame:
         df = pd.read_sql_query("SELECT * FROM activities ORDER BY start_time", conn)
     if not df.empty:
         df["start_time"] = pd.to_datetime(df["start_time"])
+        df = ensure_activity_categories(df)
     return df
 
 
@@ -70,10 +92,44 @@ def flag_anomalies(df: pd.DataFrame, column: str, z_threshold: float = 2.0) -> p
     return df
 
 
+def summarize_activities_by_category(
+    activities: pd.DataFrame, recent_days: int = 30
+) -> dict:
+    if activities.empty:
+        return {}
+
+    df = ensure_activity_categories(activities).copy()
+    df = df.dropna(subset=["start_time"])
+    if df.empty:
+        return {}
+
+    recent_cutoff = df["start_time"].max() - pd.Timedelta(days=recent_days)
+    recent = df[df["start_time"] > recent_cutoff]
+    summary = {}
+
+    for category in ACTIVITY_CATEGORIES:
+        category_df = recent[recent["category"] == category]
+        if category_df.empty:
+            continue
+
+        distance_m = category_df["distance_m"].sum(skipna=True)
+        duration_s = category_df["duration_s"].sum(skipna=True)
+        avg_hr = category_df["avg_hr"].dropna()
+        summary[category.lower()] = {
+            "count": int(len(category_df)),
+            "distance_km": round(float(distance_m or 0) / 1000, 2),
+            "duration_hours": round(float(duration_s or 0) / 3600, 2),
+            "avg_hr": round(float(avg_hr.mean()), 1) if not avg_hr.empty else None,
+        }
+
+    return summary
+
+
 def build_summary() -> dict:
-    """Aggregate recent trend numbers into a compact dict suitable for feeding to Claude."""
+    """Aggregate recent trend numbers into a compact dict suitable for AI insights."""
     stats = load_daily_stats()
     sleep = load_sleep()
+    activities = load_activities()
 
     summary = {}
 
@@ -93,5 +149,9 @@ def build_summary() -> dict:
         summary["sleep_7d_avg_hours"] = (sleep["total_sleep_s_roll7"].iloc[-1] or 0) / 3600
         summary["sleep_30d_avg_hours"] = (sleep["total_sleep_s_roll30"].iloc[-1] or 0) / 3600
         summary["sleep_score_latest"] = sleep["sleep_score"].dropna().iloc[-1] if sleep["sleep_score"].notna().any() else None
+
+    activity_summary = summarize_activities_by_category(activities)
+    if activity_summary:
+        summary["activities_last_30_days_by_type"] = activity_summary
 
     return summary

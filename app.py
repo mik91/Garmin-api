@@ -12,6 +12,12 @@ AQUA = "#1baf7a"
 YELLOW = "#eda100"
 VIOLET = "#4a3aa7"
 MUTED = "#898781"
+ACTIVITY_COLORS = {
+    "Running": BLUE,
+    "Swimming": AQUA,
+    "Cycling": YELLOW,
+    "Other": MUTED,
+}
 
 st.set_page_config(page_title="Garmin Insights", layout="wide")
 
@@ -24,7 +30,7 @@ if st.sidebar.button("Sync now"):
         with st.spinner("Syncing with Garmin Connect..."):
             try:
                 start, end = sync_module.sync(days=sync_days)
-                st.sidebar.success(f"Synced {start} to {end}.")
+                st.sidebar.success(f"Synced {sync_days} days: {start} to {end}.")
             except Exception as e:
                 st.sidebar.error(f"Sync failed: {e}")
 
@@ -35,6 +41,7 @@ tab_overview, tab_trends, tab_activities, tab_ai = st.tabs(
 daily_stats = analysis.load_daily_stats()
 sleep_df = analysis.load_sleep()
 activities_df = analysis.load_activities()
+activities_df = analysis.ensure_activity_categories(activities_df)
 
 with tab_overview:
     st.subheader("Today at a glance")
@@ -97,8 +104,68 @@ with tab_activities:
     if activities_df.empty:
         st.info("No activities yet. Sync first.")
     else:
+        st.subheader("Activity volume by type")
+        default_categories = [
+            c for c in ["Running", "Swimming", "Cycling"] if c in activities_df["category"].unique()
+        ]
+        selected_categories = st.multiselect(
+            "Activity types",
+            options=list(analysis.ACTIVITY_CATEGORIES),
+            default=default_categories or list(analysis.ACTIVITY_CATEGORIES),
+        )
+        filtered_activities = activities_df[activities_df["category"].isin(selected_categories)]
+
+        if filtered_activities.empty:
+            st.info("No activities match the selected types.")
+        else:
+            summary_cols = st.columns(len(selected_categories) or 1)
+            for col, category in zip(summary_cols, selected_categories):
+                category_df = filtered_activities[filtered_activities["category"] == category]
+                distance_km = category_df["distance_m"].sum(skipna=True) / 1000
+                duration_h = category_df["duration_s"].sum(skipna=True) / 3600
+                col.metric(category, f"{distance_km:.1f} km", f"{duration_h:.1f} h")
+
+            weekly = (
+                filtered_activities.assign(week=filtered_activities["start_time"].dt.to_period("W").dt.start_time)
+                .groupby(["week", "category"], as_index=False)
+                .agg(distance_m=("distance_m", "sum"), duration_s=("duration_s", "sum"))
+            )
+
+            fig = go.Figure()
+            for category in selected_categories:
+                category_weekly = weekly[weekly["category"] == category]
+                if category_weekly.empty:
+                    continue
+                fig.add_trace(
+                    go.Bar(
+                        x=category_weekly["week"],
+                        y=category_weekly["distance_m"] / 1000,
+                        name=category,
+                        marker_color=ACTIVITY_COLORS.get(category, MUTED),
+                    )
+                )
+            fig.update_layout(barmode="group", yaxis_title="km", legend_title_text="")
+            st.plotly_chart(fig, use_container_width=True)
+
+            fig = go.Figure()
+            for category in selected_categories:
+                category_weekly = weekly[weekly["category"] == category]
+                if category_weekly.empty:
+                    continue
+                fig.add_trace(
+                    go.Bar(
+                        x=category_weekly["week"],
+                        y=category_weekly["duration_s"] / 3600,
+                        name=category,
+                        marker_color=ACTIVITY_COLORS.get(category, MUTED),
+                    )
+                )
+            fig.update_layout(barmode="group", yaxis_title="hours", legend_title_text="")
+            st.plotly_chart(fig, use_container_width=True)
+
+        st.subheader("Activity history")
         st.dataframe(
-            activities_df[["start_time", "type", "duration_s", "distance_m", "calories", "avg_hr", "max_hr"]]
+            activities_df[["start_time", "category", "type", "duration_s", "distance_m", "calories", "avg_hr", "max_hr"]]
             .sort_values("start_time", ascending=False),
             use_container_width=True,
         )

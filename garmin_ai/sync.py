@@ -1,5 +1,5 @@
 import time
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 
 from garminconnect import Garmin
 
@@ -109,14 +109,12 @@ def _sync_body_composition(client: Garmin, conn, day: date):
 
 
 def sync(days: int = 7):
-    """Pull the last `days` days of data (or since the last sync, whichever is more recent)."""
+    """Pull the last `days` days of data."""
     client = login()
 
     with db.get_connection() as conn:
-        last_synced = db.get_last_synced_date(conn)
         today = date.today()
-        default_start = today - timedelta(days=days)
-        start = max(default_start, date.fromisoformat(last_synced)) if last_synced else default_start
+        start = today - timedelta(days=days - 1)
 
         _sync_activities(client, conn, start, today)
 
