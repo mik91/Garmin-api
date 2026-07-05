@@ -14,48 +14,87 @@ SYSTEM_PROMPT = (
 )
 
 
-def _client() -> anthropic.Anthropic:
+class AIProviderError(ValueError):
+    pass
+
+
+def provider_name() -> str:
+    if config.AI_PROVIDER in {"anthropic", "openai"}:
+        return config.AI_PROVIDER
+    raise AIProviderError(
+        f"Unsupported AI_PROVIDER '{config.AI_PROVIDER}'. Use 'anthropic' or 'openai'."
+    )
+
+
+def configured_model() -> str:
+    return config.OPENAI_MODEL if provider_name() == "openai" else config.ANTHROPIC_MODEL
+
+
+def is_configured() -> bool:
+    if provider_name() == "openai":
+        return bool(config.OPENAI_API_KEY)
+    return bool(config.ANTHROPIC_API_KEY)
+
+
+def missing_config_message() -> str:
+    if provider_name() == "openai":
+        return "Set OPENAI_API_KEY in .env to enable AI insights."
+    return "Set ANTHROPIC_API_KEY in .env to enable AI insights."
+
+
+def _anthropic_client() -> anthropic.Anthropic:
     return anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
 
 
+def _openai_client():
+    from openai import OpenAI
+
+    return OpenAI(api_key=config.OPENAI_API_KEY)
+
+
+def _anthropic_message(content: str) -> str:
+    client = _anthropic_client()
+    response = client.messages.create(
+        model=config.ANTHROPIC_MODEL,
+        max_tokens=1024,
+        thinking={"type": "adaptive"},
+        system=SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": content}],
+    )
+    return next((b.text for b in response.content if b.type == "text"), "")
+
+
+def _openai_message(content: str) -> str:
+    client = _openai_client()
+    response = client.responses.create(
+        model=config.OPENAI_MODEL,
+        instructions=SYSTEM_PROMPT,
+        input=content,
+        max_output_tokens=1024,
+    )
+    if getattr(response, "output_text", None):
+        return response.output_text
+    return ""
+
+
+def _message(content: str) -> str:
+    if provider_name() == "openai":
+        return _openai_message(content)
+    return _anthropic_message(content)
+
+
 def generate_summary(summary: dict) -> str:
-    client = _client()
-    response = client.messages.create(
-        model=config.ANTHROPIC_MODEL,
-        max_tokens=1024,
-        thinking={"type": "adaptive"},
-        system=SYSTEM_PROMPT,
-        messages=[
-            {
-                "role": "user",
-                "content": (
-                    "Here are my recent aggregated Garmin stats as JSON:\n\n"
-                    f"{json.dumps(summary, indent=2, default=str)}\n\n"
-                    "Give me a short narrative summary of my recent health/fitness trends."
-                ),
-            }
-        ],
+    content = (
+        "Here are my recent aggregated Garmin stats as JSON:\n\n"
+        f"{json.dumps(summary, indent=2, default=str)}\n\n"
+        "Give me a short narrative summary of my recent health/fitness trends."
     )
-    return next((b.text for b in response.content if b.type == "text"), "")
+    return _message(content)
 
 
-def ask(summary: dict, question: str, history: list[dict] | None = None) -> str:
-    client = _client()
-    messages = list(history or [])
-    messages.append(
-        {
-            "role": "user",
-            "content": (
-                f"My recent aggregated Garmin stats (JSON): {json.dumps(summary, default=str)}\n\n"
-                f"Question: {question}"
-            ),
-        }
+def ask(summary: dict, question: str) -> str:
+    content = (
+        f"My recent aggregated Garmin stats (JSON): {json.dumps(summary, default=str)}\n\n"
+        f"Question: {question}"
     )
-    response = client.messages.create(
-        model=config.ANTHROPIC_MODEL,
-        max_tokens=1024,
-        thinking={"type": "adaptive"},
-        system=SYSTEM_PROMPT,
-        messages=messages,
-    )
-    return next((b.text for b in response.content if b.type == "text"), "")
+    return _message(content)

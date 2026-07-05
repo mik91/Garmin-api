@@ -1,3 +1,5 @@
+import json
+
 import streamlit as st
 import plotly.graph_objects as go
 
@@ -102,26 +104,51 @@ with tab_activities:
         )
 
 with tab_ai:
-    if not config.ANTHROPIC_API_KEY:
-        st.warning("Set ANTHROPIC_API_KEY in .env to enable AI insights.")
-    elif daily_stats.empty:
+    if daily_stats.empty:
         st.info("No data yet. Sync first.")
     else:
+        try:
+            ai_ready = ai_insights.is_configured()
+            provider = ai_insights.provider_name()
+            model = ai_insights.configured_model()
+            provider_error = None
+        except ai_insights.AIProviderError as e:
+            ai_ready = False
+            provider = config.AI_PROVIDER
+            model = "-"
+            provider_error = str(e)
+
+        if provider_error:
+            st.error(provider_error)
+        elif not ai_ready:
+            st.warning(ai_insights.missing_config_message())
+
         summary = analysis.build_summary()
+        summary_json = json.dumps(summary, indent=2, default=str)
+        summary_key = f"{provider}:{model}:{summary_json}"
 
         if "ai_summary" not in st.session_state:
             st.session_state.ai_summary = None
+        if st.session_state.get("ai_summary_key") != summary_key:
+            st.session_state.ai_summary = None
+            st.session_state.ai_summary_key = summary_key
 
-        if st.button("Generate insights") or st.session_state.ai_summary is None:
-            with st.spinner("Asking Claude for a summary..."):
+        st.caption(f"Provider: {provider} / Model: {model}")
+        with st.expander("Aggregated summary that will be sent"):
+            st.json(summary)
+
+        if st.button("Generate insights", disabled=not ai_ready):
+            with st.spinner(f"Asking {provider} for a summary..."):
                 st.session_state.ai_summary = ai_insights.generate_summary(summary)
+                st.session_state.ai_summary_key = summary_key
 
-        st.markdown(st.session_state.ai_summary or "")
+        if st.session_state.ai_summary:
+            st.markdown(st.session_state.ai_summary)
 
         st.divider()
         st.subheader("Ask a question about your data")
         question = st.text_input("Question")
-        if st.button("Ask") and question:
+        if st.button("Ask", disabled=not ai_ready) and question:
             with st.spinner("Thinking..."):
                 answer = ai_insights.ask(summary, question)
             st.markdown(answer)
