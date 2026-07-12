@@ -65,6 +65,13 @@ GARMIN_TOKENSTORE=.garmin_tokens
 GARMIN_DB_PATH=data/garmin.db
 ```
 
+Optional automatic sync when the app starts:
+
+```env
+GARMIN_AUTO_SYNC_ON_STARTUP=true
+GARMIN_AUTO_SYNC_DAYS=7
+```
+
 Keep `.env` private. It contains secrets and should not be committed.
 
 ## 5. Sync Garmin Data

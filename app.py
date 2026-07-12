@@ -390,6 +390,29 @@ def build_current_view_summary(
     return summary
 
 
+def maybe_auto_sync_on_startup():
+    if not config.GARMIN_AUTO_SYNC_ON_STARTUP:
+        return
+    if st.session_state.get("startup_sync_attempted"):
+        return
+
+    st.session_state["startup_sync_attempted"] = True
+    if not config.GARMIN_EMAIL or not config.GARMIN_PASSWORD:
+        st.session_state["startup_sync_status"] = "Set GARMIN_EMAIL and GARMIN_PASSWORD in .env first."
+        return
+
+    with st.spinner("Syncing with Garmin Connect..."):
+        try:
+            start, end = sync_module.sync(days=config.GARMIN_AUTO_SYNC_DAYS)
+            st.session_state["startup_sync_status"] = (
+                f"Auto-synced {config.GARMIN_AUTO_SYNC_DAYS} days: {start} to {end}."
+            )
+        except Exception as e:
+            st.session_state["startup_sync_status"] = f"Auto-sync failed: {e}"
+
+
+maybe_auto_sync_on_startup()
+
 daily_stats = analysis.load_daily_stats()
 sleep_df = analysis.load_sleep()
 activities_df = analysis.ensure_activity_categories(analysis.load_activities())
@@ -407,6 +430,11 @@ min_date = min(all_dates) if all_dates else date.today()
 max_date = max(all_dates) if all_dates else date.today()
 
 st.sidebar.header("Garmin Insights")
+if startup_sync_status := st.session_state.get("startup_sync_status"):
+    if startup_sync_status.startswith("Auto-synced"):
+        st.sidebar.success(startup_sync_status)
+    else:
+        st.sidebar.warning(startup_sync_status)
 sync_days = st.sidebar.number_input("Days to sync", min_value=1, max_value=365, value=7)
 if st.sidebar.button("Sync now", use_container_width=True):
     if not config.GARMIN_EMAIL or not config.GARMIN_PASSWORD:
