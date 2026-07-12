@@ -57,6 +57,11 @@ def load_body_composition() -> pd.DataFrame:
     return df
 
 
+def load_sync_state() -> dict:
+    with db.get_connection() as conn:
+        return db.get_sync_state(conn)
+
+
 def add_rolling_averages(df: pd.DataFrame, column: str, windows=(7, 30)) -> pd.DataFrame:
     df = df.copy()
     for w in windows:

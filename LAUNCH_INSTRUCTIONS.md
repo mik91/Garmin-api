@@ -88,6 +88,14 @@ You can also sync from the app sidebar after launching the dashboard.
 
 ## 6. Launch the Dashboard
 
+Fast path:
+
+```powershell
+.\start.ps1
+```
+
+Or launch Streamlit directly:
+
 ```powershell
 streamlit run app.py
 ```
@@ -117,7 +125,7 @@ python cli.py sync --days 90
 Start the dashboard:
 
 ```powershell
-streamlit run app.py
+.\start.ps1
 ```
 
 Stop the dashboard:

@@ -1,5 +1,5 @@
 import json
-from datetime import date
+from datetime import date, datetime, timedelta
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -28,6 +28,15 @@ PERIODS = {
     "Monthly": "MS",
     "Yearly": "YS",
 }
+DATE_PRESETS = (
+    "Last 7 days",
+    "Last 30 days",
+    "This week",
+    "This month",
+    "This year",
+    "All data",
+    "Custom",
+)
 
 
 st.set_page_config(page_title="Garmin Insights", layout="wide")
@@ -38,14 +47,14 @@ st.markdown(
     <style>
     .block-container {padding-top: 1.3rem;}
     [data-testid="stMetric"] {
-        background: #fbfaf7;
-        border: 1px solid #eee8dd;
+        background: #f8fafc;
+        border: 1px solid #e2e8f0;
         border-radius: 8px;
         padding: 0.85rem 0.9rem;
     }
-    [data-testid="stMetricLabel"] {color: #57534c;}
+    [data-testid="stMetricLabel"] {color: #475569;}
     [data-testid="stMetricValue"] {color: #232323;}
-    div[data-testid="stDataFrame"] {border: 1px solid #eee8dd; border-radius: 8px;}
+    div[data-testid="stDataFrame"] {border: 1px solid #e2e8f0; border-radius: 8px;}
     </style>
     """,
     unsafe_allow_html=True,
@@ -71,6 +80,15 @@ def fmt_number(value, suffix="", decimals=0, empty="-"):
     if value is None or pd.isna(value):
         return empty
     return f"{float(value):,.{decimals}f}{suffix}"
+
+
+def fmt_delta(value, suffix="", decimals=0, inverse_good: bool = False):
+    if value is None or pd.isna(value):
+        return None
+    direction = "normal"
+    if inverse_good:
+        direction = "inverse"
+    return f"{float(value):+,.{decimals}f}{suffix}", direction
 
 
 def fmt_duration(seconds, empty="-"):
@@ -111,6 +129,40 @@ def apply_date_filter(df: pd.DataFrame, column: str, start: date, end: date) -> 
     start_ts = pd.Timestamp(start)
     end_ts = pd.Timestamp(end) + pd.Timedelta(days=1) - pd.Timedelta(microseconds=1)
     return df[(df[column] >= start_ts) & (df[column] <= end_ts)].copy()
+
+
+def preset_date_range(preset: str, min_available: date, max_available: date) -> tuple[date, date]:
+    today = date.today()
+    anchor = min(max_available, today)
+    if preset == "Last 7 days":
+        start = anchor - timedelta(days=6)
+        end = anchor
+    elif preset == "Last 30 days":
+        start = anchor - timedelta(days=29)
+        end = anchor
+    elif preset == "This week":
+        start = anchor - timedelta(days=anchor.weekday())
+        end = anchor
+    elif preset == "This month":
+        start = anchor.replace(day=1)
+        end = anchor
+    elif preset == "This year":
+        start = anchor.replace(month=1, day=1)
+        end = anchor
+    elif preset == "All data":
+        start = min_available
+        end = max_available
+    else:
+        start = min_available
+        end = max_available
+    return max(start, min_available), min(end, max_available)
+
+
+def previous_range(start: date, end: date) -> tuple[date, date]:
+    days = max((end - start).days + 1, 1)
+    previous_end = start - timedelta(days=1)
+    previous_start = previous_end - timedelta(days=days - 1)
+    return previous_start, previous_end
 
 
 def current_period_bounds(period_name: str, anchor: date) -> tuple[date, date]:
@@ -193,6 +245,34 @@ def aggregate_activities(df: pd.DataFrame, period_name: str) -> pd.DataFrame:
     )
 
 
+def sum_or_none(df: pd.DataFrame, column: str):
+    if df.empty or column not in df or not df[column].notna().any():
+        return None
+    return df[column].sum(skipna=True)
+
+
+def mean_or_none(df: pd.DataFrame, column: str):
+    if df.empty or column not in df or not df[column].notna().any():
+        return None
+    return df[column].mean(skipna=True)
+
+
+def diff(current, previous):
+    if current is None or previous is None or pd.isna(current) or pd.isna(previous):
+        return None
+    return current - previous
+
+
+def percent_delta(current, previous):
+    if current is None or previous in (None, 0) or pd.isna(current) or pd.isna(previous):
+        return None
+    return (current - previous) / previous * 100
+
+
+def activity_type_label(value) -> str:
+    return str(value or "Unknown")
+
+
 def style_figure(fig: go.Figure, yaxis_title: str | None = None) -> go.Figure:
     fig.update_layout(
         margin=dict(l=10, r=10, t=26, b=10),
@@ -238,6 +318,125 @@ def activity_details_df(activities: pd.DataFrame) -> pd.DataFrame:
     df["distance_km"] = df["distance_m"] / 1000
     df["duration"] = df["duration_s"].apply(fmt_duration)
     return df
+
+
+def build_data_quality_notes(
+    daily: pd.DataFrame,
+    sleep: pd.DataFrame,
+    activities: pd.DataFrame,
+    body: pd.DataFrame,
+    sync_state: dict,
+    start: date,
+    end: date,
+) -> list[str]:
+    notes = []
+    expected_days = max((end - start).days + 1, 1)
+    last_synced_at = sync_state.get("last_synced_at")
+    last_synced_date = sync_state.get("last_synced_date")
+
+    if not last_synced_at and not last_synced_date:
+        notes.append("No successful sync recorded yet.")
+    elif last_synced_at:
+        try:
+            synced_at = datetime.fromisoformat(last_synced_at)
+            if datetime.now() - synced_at > timedelta(days=2):
+                notes.append(f"Last sync was {synced_at:%b %d, %Y at %I:%M %p}.")
+        except ValueError:
+            notes.append(f"Last sync timestamp looks unusual: {last_synced_at}.")
+
+    if daily.empty:
+        notes.append("No daily stats in the selected range.")
+    elif daily["date"].dt.date.nunique() < max(1, expected_days * 0.6):
+        notes.append("Daily stats cover less than 60% of this date range.")
+
+    if sleep.empty:
+        notes.append("No sleep records in the selected range.")
+    elif sleep["date"].dt.date.nunique() < max(1, expected_days * 0.5):
+        notes.append("Sleep data is sparse for this range.")
+
+    if activities.empty:
+        notes.append("No activities in the selected range.")
+    elif "avg_hr" in activities and activities["avg_hr"].isna().mean() > 0.35:
+        notes.append("More than a third of activities are missing average heart rate.")
+
+    if body.empty:
+        notes.append("No body composition entries in this range.")
+
+    return notes[:5]
+
+
+def build_coach_notes(
+    daily: pd.DataFrame,
+    previous_daily: pd.DataFrame,
+    sleep: pd.DataFrame,
+    previous_sleep: pd.DataFrame,
+    activities: pd.DataFrame,
+    previous_activities: pd.DataFrame,
+) -> list[str]:
+    notes = []
+    current_steps = mean_or_none(daily, "steps")
+    previous_steps = mean_or_none(previous_daily, "steps")
+    step_change = percent_delta(current_steps, previous_steps)
+    if step_change is not None:
+        notes.append(f"Average steps are {abs(step_change):.0f}% {'higher' if step_change >= 0 else 'lower'} than the previous period.")
+
+    current_sleep = mean_or_none(sleep, "total_sleep_s")
+    previous_sleep_seconds = mean_or_none(previous_sleep, "total_sleep_s")
+    sleep_change_h = diff(current_sleep, previous_sleep_seconds)
+    if sleep_change_h is not None:
+        notes.append(f"Average sleep is {abs(sleep_change_h) / 3600:.1f} h {'higher' if sleep_change_h >= 0 else 'lower'} per night than the previous period.")
+
+    current_hr = mean_or_none(daily, "resting_hr")
+    previous_hr = mean_or_none(previous_daily, "resting_hr")
+    hr_change = diff(current_hr, previous_hr)
+    if hr_change is not None:
+        notes.append(f"Resting HR is {abs(hr_change):.0f} bpm {'higher' if hr_change >= 0 else 'lower'} than the previous period.")
+
+    current_distance = sum_or_none(activities, "distance_m")
+    previous_distance = sum_or_none(previous_activities, "distance_m")
+    distance_change = percent_delta(current_distance, previous_distance)
+    if distance_change is not None:
+        notes.append(f"Training distance is {abs(distance_change):.0f}% {'higher' if distance_change >= 0 else 'lower'} than the previous period.")
+
+    if not activities.empty:
+        top_category = activities.groupby("category")["duration_s"].sum().sort_values(ascending=False)
+        if not top_category.empty:
+            notes.append(f"Most training time came from {top_category.index[0].lower()} this period.")
+
+    return notes[:5] or ["Not enough comparison data yet. Sync more history to unlock trend notes."]
+
+
+def training_view_df(activities: pd.DataFrame, category: str, activity_types: list[str]) -> pd.DataFrame:
+    if activities.empty:
+        return activities
+    df = activities.copy()
+    if category != "All":
+        df = df[df["category"] == category]
+    if activity_types:
+        labels = df["type"].apply(activity_type_label)
+        df = df[labels.isin(activity_types)]
+    return df
+
+
+def build_training_summary(activities: pd.DataFrame, start: date, end: date) -> dict:
+    if activities.empty:
+        return {}
+    details = activity_details_df(activities)
+    period_days = max((end - start).days + 1, 1)
+    distance_km = details["distance_m"].sum(skipna=True) / 1000
+    duration_h = details["duration_s"].sum(skipna=True) / 3600
+    summary = {
+        "count": len(details),
+        "distance_km": distance_km,
+        "duration_h": duration_h,
+        "weekly_distance_km": distance_km / period_days * 7,
+        "weekly_duration_h": duration_h / period_days * 7,
+        "avg_hr": mean_or_none(details, "avg_hr"),
+        "training_load": sum_or_none(details, "training_load"),
+    }
+    if details["distance_m"].sum(skipna=True) and details["moving_duration_s"].sum(skipna=True):
+        summary["avg_pace"] = fmt_pace(details["distance_m"].sum(skipna=True), details["moving_duration_s"].sum(skipna=True))
+    return summary
 
 
 def clean_value(value):
@@ -417,6 +616,7 @@ daily_stats = analysis.load_daily_stats()
 sleep_df = analysis.load_sleep()
 activities_df = analysis.ensure_activity_categories(analysis.load_activities())
 body_df = analysis.load_body_composition()
+sync_state = analysis.load_sync_state()
 
 all_dates = []
 if not daily_stats.empty:
@@ -425,6 +625,8 @@ if not sleep_df.empty:
     all_dates.extend(sleep_df["date"].dt.date.tolist())
 if not activities_df.empty:
     all_dates.extend(activities_df["start_time"].dt.date.tolist())
+if not body_df.empty:
+    all_dates.extend(body_df["date"].dt.date.tolist())
 
 min_date = min(all_dates) if all_dates else date.today()
 max_date = max(all_dates) if all_dates else date.today()
@@ -435,6 +637,24 @@ if startup_sync_status := st.session_state.get("startup_sync_status"):
         st.sidebar.success(startup_sync_status)
     else:
         st.sidebar.warning(startup_sync_status)
+
+st.sidebar.subheader("Sync")
+last_synced_at = sync_state.get("last_synced_at")
+last_synced_date = sync_state.get("last_synced_date")
+if last_synced_at:
+    try:
+        parsed_sync = datetime.fromisoformat(last_synced_at)
+        st.sidebar.caption(f"Last sync: {parsed_sync:%b %d, %Y at %I:%M %p}")
+    except ValueError:
+        st.sidebar.caption(f"Last sync: {last_synced_at}")
+elif last_synced_date:
+    st.sidebar.caption(f"Last sync date: {last_synced_date}")
+else:
+    st.sidebar.caption("Last sync: never")
+st.sidebar.caption(
+    f"Auto-sync: {'on' if config.GARMIN_AUTO_SYNC_ON_STARTUP else 'off'}"
+    + (f" | {config.GARMIN_AUTO_SYNC_DAYS} days" if config.GARMIN_AUTO_SYNC_ON_STARTUP else "")
+)
 sync_days = st.sidebar.number_input("Days to sync", min_value=1, max_value=365, value=7)
 if st.sidebar.button("Sync now", use_container_width=True):
     if not config.GARMIN_EMAIL or not config.GARMIN_PASSWORD:
@@ -450,16 +670,24 @@ if st.sidebar.button("Sync now", use_container_width=True):
 
 st.sidebar.divider()
 st.sidebar.subheader("View")
-date_range = st.sidebar.date_input(
-    "Date range",
-    value=(min_date, max_date),
-    min_value=min_date,
-    max_value=max_date,
-)
+date_preset = st.sidebar.selectbox("Date preset", DATE_PRESETS, index=1)
+default_start, default_end = preset_date_range(date_preset, min_date, max_date)
+if date_preset == "Custom":
+    date_range = st.sidebar.date_input(
+        "Date range",
+        value=(default_start, default_end),
+        min_value=min_date,
+        max_value=max_date,
+    )
+else:
+    date_range = (default_start, default_end)
+    st.sidebar.caption(f"{default_start:%b %d, %Y} to {default_end:%b %d, %Y}")
 if isinstance(date_range, tuple) and len(date_range) == 2:
     start_date, end_date = date_range
 else:
     start_date = end_date = date_range
+if start_date > end_date:
+    start_date, end_date = end_date, start_date
 
 period = st.sidebar.segmented_control("Group charts by", list(PERIODS), default="Weekly")
 show_other = st.sidebar.checkbox("Include other activities", value=True)
@@ -470,6 +698,13 @@ activities_filtered = apply_date_filter(activities_df, "start_time", start_date,
 if not show_other and not activities_filtered.empty:
     activities_filtered = activities_filtered[activities_filtered["category"] != "Other"]
 body_filtered = apply_date_filter(body_df, "date", start_date, end_date)
+
+previous_start_date, previous_end_date = previous_range(start_date, end_date)
+previous_daily = apply_date_filter(daily_stats, "date", previous_start_date, previous_end_date)
+previous_sleep = apply_date_filter(sleep_df, "date", previous_start_date, previous_end_date)
+previous_activities = apply_date_filter(activities_df, "start_time", previous_start_date, previous_end_date)
+if not show_other and not previous_activities.empty:
+    previous_activities = previous_activities[previous_activities["category"] != "Other"]
 
 overview_start_date, overview_end_date = current_period_bounds(period, end_date)
 overview_daily = apply_date_filter(daily_stats, "date", overview_start_date, overview_end_date)
@@ -485,52 +720,138 @@ sleep_period = aggregate_sleep(sleep_filtered, period)
 activity_period = aggregate_activities(activities_filtered, period)
 activity_details = activity_details_df(activities_filtered)
 overview_daily_period = aggregate_daily(overview_daily, "Daily")
+quality_notes = build_data_quality_notes(
+    daily_filtered,
+    sleep_filtered,
+    activities_filtered,
+    body_filtered,
+    sync_state,
+    start_date,
+    end_date,
+)
+coach_notes = build_coach_notes(
+    daily_filtered,
+    previous_daily,
+    sleep_filtered,
+    previous_sleep,
+    activities_filtered,
+    previous_activities,
+)
 
 st.title("Garmin Insights")
-st.caption(f"{start_date:%b %d, %Y} to {end_date:%b %d, %Y} | grouped {period.lower()}")
+st.caption(
+    f"{start_date:%b %d, %Y} to {end_date:%b %d, %Y} | grouped {period.lower()} | "
+    f"previous period: {previous_start_date:%b %d} to {previous_end_date:%b %d, %Y}"
+)
 
-tab_overview, tab_trends, tab_activities, tab_ai = st.tabs(
-    ["Overview", "Trends", "Activities", "AI Insights"]
+tab_overview, tab_trends, tab_training, tab_activities, tab_ai = st.tabs(
+    ["Overview", "Trends", "Training", "Activities", "AI Insights"]
 )
 
 with tab_overview:
     if daily_stats.empty and activities_df.empty and sleep_df.empty:
         st.info("No data yet. Use 'Sync now' in the sidebar to pull data from Garmin Connect.")
     else:
-        st.caption(
-            f"Overview period: {overview_start_date:%b %d, %Y} to "
-            f"{overview_end_date:%b %d, %Y}"
-        )
-
-        total_steps = overview_daily["steps"].sum(skipna=True) if not overview_daily.empty else None
-        avg_steps = overview_daily["steps"].mean(skipna=True) if not overview_daily.empty else None
+        total_steps = sum_or_none(daily_filtered, "steps")
+        previous_steps = sum_or_none(previous_daily, "steps")
+        avg_steps = mean_or_none(daily_filtered, "steps")
         avg_sleep_h = (
-            overview_sleep["total_sleep_s"].mean(skipna=True) / 3600
-            if not overview_sleep.empty
+            mean_or_none(sleep_filtered, "total_sleep_s") / 3600
+            if mean_or_none(sleep_filtered, "total_sleep_s") is not None
+            else None
+        )
+        previous_sleep_h = (
+            mean_or_none(previous_sleep, "total_sleep_s") / 3600
+            if mean_or_none(previous_sleep, "total_sleep_s") is not None
             else None
         )
         avg_resting_hr = (
-            overview_daily["resting_hr"].mean(skipna=True) if not overview_daily.empty else None
+            mean_or_none(daily_filtered, "resting_hr") if not daily_filtered.empty else None
         )
-        activity_count = len(overview_activities)
+        previous_resting_hr = (
+            mean_or_none(previous_daily, "resting_hr") if not previous_daily.empty else None
+        )
+        avg_body_battery = mean_or_none(daily_filtered, "body_battery_high")
+        previous_body_battery = mean_or_none(previous_daily, "body_battery_high")
+        activity_count = len(activities_filtered)
+        previous_activity_count = len(previous_activities)
         distance_km = (
-            overview_activities["distance_m"].sum(skipna=True) / 1000
-            if not overview_activities.empty
+            activities_filtered["distance_m"].sum(skipna=True) / 1000
+            if not activities_filtered.empty
+            else None
+        )
+        previous_distance_km = (
+            previous_activities["distance_m"].sum(skipna=True) / 1000
+            if not previous_activities.empty
             else None
         )
         duration_h = (
-            overview_activities["duration_s"].sum(skipna=True) / 3600
-            if not overview_activities.empty
+            activities_filtered["duration_s"].sum(skipna=True) / 3600
+            if not activities_filtered.empty
             else None
         )
 
         cols = st.columns(6)
-        cols[0].metric("Total steps", fmt_number(total_steps))
-        cols[1].metric("Avg steps/day", fmt_number(avg_steps))
-        cols[2].metric("Avg sleep", fmt_number(avg_sleep_h, " h", 1))
-        cols[3].metric("Resting HR", fmt_number(avg_resting_hr, " bpm"))
-        cols[4].metric("Activities", f"{activity_count}")
-        cols[5].metric("Distance", fmt_number(distance_km, " km", 1))
+        steps_delta = fmt_delta(percent_delta(total_steps, previous_steps), "%", 0)
+        cols[0].metric(
+            "Total steps",
+            fmt_number(total_steps),
+            delta=steps_delta[0] if steps_delta else None,
+            delta_color=steps_delta[1] if steps_delta else "normal",
+        )
+        avg_steps_delta = fmt_delta(diff(avg_steps, mean_or_none(previous_daily, "steps")))
+        cols[1].metric(
+            "Avg steps/day",
+            fmt_number(avg_steps),
+            delta=avg_steps_delta[0] if avg_steps_delta else None,
+            delta_color=avg_steps_delta[1] if avg_steps_delta else "normal",
+        )
+        sleep_delta = fmt_delta(diff(avg_sleep_h, previous_sleep_h), " h", 1)
+        cols[2].metric(
+            "Avg sleep",
+            fmt_number(avg_sleep_h, " h", 1),
+            delta=sleep_delta[0] if sleep_delta else None,
+            delta_color=sleep_delta[1] if sleep_delta else "normal",
+        )
+        hr_delta = fmt_delta(diff(avg_resting_hr, previous_resting_hr), " bpm", 0, inverse_good=True)
+        cols[3].metric(
+            "Resting HR",
+            fmt_number(avg_resting_hr, " bpm"),
+            delta=hr_delta[0] if hr_delta else None,
+            delta_color=hr_delta[1] if hr_delta else "normal",
+        )
+        activity_delta = fmt_delta(diff(activity_count, previous_activity_count))
+        cols[4].metric(
+            "Activities",
+            f"{activity_count}",
+            delta=activity_delta[0] if activity_delta else None,
+            delta_color=activity_delta[1] if activity_delta else "normal",
+        )
+        distance_delta = fmt_delta(percent_delta(distance_km, previous_distance_km), "%", 0)
+        cols[5].metric(
+            "Distance",
+            fmt_number(distance_km, " km", 1),
+            delta=distance_delta[0] if distance_delta else None,
+            delta_color=distance_delta[1] if distance_delta else "normal",
+        )
+
+        cols = st.columns([1, 1])
+        with cols[0]:
+            st.subheader("Coach notes")
+            for note in coach_notes:
+                st.markdown(f"- {note}")
+        with cols[1]:
+            st.subheader("Data quality")
+            if quality_notes:
+                for note in quality_notes:
+                    st.markdown(f"- {note}")
+            else:
+                st.success("Data coverage looks good for this range.")
+
+        st.caption(
+            f"Current {period.lower()} overview: {overview_start_date:%b %d, %Y} to "
+            f"{overview_end_date:%b %d, %Y}"
+        )
 
         cols = st.columns([1.05, 1])
         with cols[0]:
@@ -587,20 +908,27 @@ with tab_overview:
                 fig.update_traces(textinfo="label+percent", hovertemplate="%{label}<br>%{value:.0f} m<extra></extra>")
                 st.plotly_chart(style_figure(fig), use_container_width=True)
 
-        cols = st.columns(3)
+        cols = st.columns(4)
         cols[0].metric("Training time", fmt_number(duration_h, " h", 1))
+        battery_delta = fmt_delta(diff(avg_body_battery, previous_body_battery))
+        cols[1].metric(
+            "Body battery high",
+            fmt_number(avg_body_battery),
+            delta=battery_delta[0] if battery_delta else None,
+            delta_color=battery_delta[1] if battery_delta else "normal",
+        )
         if not overview_activities.empty:
-            cols[1].metric(
+            cols[2].metric(
                 "Elevation gain",
                 fmt_number(overview_activities["elevation_gain_m"].sum(skipna=True), " m"),
             )
-            cols[2].metric(
+            cols[3].metric(
                 "Avg workout HR",
                 fmt_number(overview_activities["avg_hr"].mean(skipna=True), " bpm"),
             )
         else:
-            cols[1].metric("Elevation gain", "-")
-            cols[2].metric("Avg workout HR", "-")
+            cols[2].metric("Elevation gain", "-")
+            cols[3].metric("Avg workout HR", "-")
 
 with tab_trends:
     if daily_period.empty and sleep_period.empty:
@@ -683,6 +1011,162 @@ with tab_trends:
                     yaxis2=dict(title="body fat %", overlaying="y", side="right", showgrid=False)
                 )
             st.plotly_chart(style_figure(fig, "kg"), use_container_width=True)
+
+with tab_training:
+    if activities_filtered.empty:
+        st.info("No activities match the current date filters.")
+    else:
+        available_categories = ["All"] + [
+            category
+            for category in analysis.ACTIVITY_CATEGORIES
+            if category in activities_filtered["category"].dropna().unique()
+        ]
+        control_cols = st.columns([1, 2])
+        sport_group = control_cols[0].selectbox(
+            "Sport group",
+            options=available_categories,
+            index=available_categories.index("Running") if "Running" in available_categories else 0,
+        )
+        group_df = training_view_df(activities_filtered, sport_group, [])
+        available_types = sorted(group_df["type"].dropna().apply(activity_type_label).unique().tolist())
+        selected_types = control_cols[1].multiselect(
+            "Activity types",
+            options=available_types,
+            default=available_types,
+        )
+        training_df = training_view_df(activities_filtered, sport_group, selected_types)
+        training_details = activity_details_df(training_df)
+        training_period = aggregate_activities(training_df, period)
+
+        if training_df.empty:
+            st.info("No activities match the selected training filters.")
+        else:
+            training_summary = build_training_summary(training_df, start_date, end_date)
+            metric_cols = st.columns(6)
+            metric_cols[0].metric("Sessions", f"{training_summary.get('count', 0)}")
+            metric_cols[1].metric("Distance", fmt_number(training_summary.get("distance_km"), " km", 1))
+            metric_cols[2].metric("Time", fmt_number(training_summary.get("duration_h"), " h", 1))
+            metric_cols[3].metric(
+                "Weekly volume",
+                fmt_number(training_summary.get("weekly_distance_km"), " km", 1),
+            )
+            metric_cols[4].metric("Avg HR", fmt_number(training_summary.get("avg_hr"), " bpm"))
+            metric_cols[5].metric("Load", fmt_number(training_summary.get("training_load")))
+
+            cols = st.columns(2)
+            with cols[0]:
+                st.subheader(f"{period} distance")
+                if training_period.empty:
+                    st.info("No chart data for this selection.")
+                else:
+                    distance_period = (
+                        training_period.groupby("period", as_index=False)["distance_m"].sum()
+                    )
+                    fig = go.Figure(
+                        go.Bar(
+                            x=distance_period["period"],
+                            y=distance_period["distance_m"] / 1000,
+                            marker_color=BLUE,
+                        )
+                    )
+                    st.plotly_chart(style_figure(fig, "km"), use_container_width=True)
+
+            with cols[1]:
+                st.subheader(f"{period} training time")
+                if not training_period.empty:
+                    duration_period = (
+                        training_period.groupby("period", as_index=False)["duration_s"].sum()
+                    )
+                    fig = go.Figure(
+                        go.Bar(
+                            x=duration_period["period"],
+                            y=duration_period["duration_s"] / 3600,
+                            marker_color=AQUA,
+                        )
+                    )
+                    st.plotly_chart(style_figure(fig, "hours"), use_container_width=True)
+
+            cols = st.columns(2)
+            with cols[0]:
+                st.subheader("Effort trend")
+                if not training_details.empty and training_details["avg_hr"].notna().any():
+                    fig = go.Figure()
+                    fig.add_trace(
+                        go.Scatter(
+                            x=training_details["start_time"],
+                            y=training_details["avg_hr"],
+                            name="Avg HR",
+                            mode="lines+markers",
+                            line=dict(color=ROSE, width=2.5),
+                        )
+                    )
+                    if training_details["training_load"].notna().any():
+                        fig.add_trace(
+                            go.Bar(
+                                x=training_details["start_time"],
+                                y=training_details["training_load"],
+                                name="Load",
+                                marker_color=YELLOW,
+                                yaxis="y2",
+                                opacity=0.45,
+                            )
+                        )
+                        fig.update_layout(
+                            yaxis2=dict(title="load", overlaying="y", side="right", showgrid=False)
+                        )
+                    st.plotly_chart(style_figure(fig, "bpm"), use_container_width=True)
+                else:
+                    st.info("No heart-rate trend for this selection.")
+
+            with cols[1]:
+                st.subheader("Recent sessions")
+                recent_cols = [
+                    "start_time",
+                    "name",
+                    "distance_km",
+                    "duration",
+                    "pace",
+                    "avg_hr",
+                    "training_load",
+                ]
+                st.dataframe(
+                    training_details[recent_cols].sort_values("start_time", ascending=False).head(8),
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "start_time": st.column_config.DatetimeColumn("Start"),
+                        "name": "Activity",
+                        "distance_km": st.column_config.NumberColumn("Distance km", format="%.2f"),
+                        "avg_hr": st.column_config.NumberColumn("Avg HR", format="%.0f"),
+                        "training_load": st.column_config.NumberColumn("Load", format="%.0f"),
+                    },
+                )
+
+            if sport_group == "Running" or any("run" in t.lower() for t in selected_types):
+                running_details = summarize_running_details(training_df, start_date, end_date)
+                if running_details:
+                    st.subheader("Running focus")
+                    run_cols = st.columns(4)
+                    run_cols[0].metric("Avg pace", running_details["avg_pace"])
+                    run_cols[1].metric(
+                        "Avg run distance",
+                        fmt_number(running_details["avg_run_distance_km"], " km", 1),
+                    )
+                    run_cols[2].metric(
+                        "Est weekly volume",
+                        fmt_number(running_details["estimated_weekly_volume_km"], " km", 1),
+                    )
+                    longest = running_details["longest_run"]
+                    run_cols[3].metric("Longest run", fmt_number(longest["distance_km"], " km", 1))
+
+                    best_cols = st.columns(3)
+                    for col, label, key in [
+                        (best_cols[0], "Best 5K", "best_5k"),
+                        (best_cols[1], "Best 10K", "best_10k"),
+                        (best_cols[2], "Best mile", "best_1_mile"),
+                    ]:
+                        effort = running_details.get(key)
+                        col.metric(label, effort["time"] if effort else "-")
 
 with tab_activities:
     if activities_filtered.empty:
@@ -897,6 +1381,28 @@ with tab_ai:
             st.session_state.ai_chat_summary_key = summary_key
 
         st.caption(f"Provider: {provider} / Model: {model}")
+        st.subheader("Suggested focus")
+        for note in coach_notes:
+            st.markdown(f"- {note}")
+
+        suggested_prompts = [
+            "What changed most compared with the previous period?",
+            "What should I focus on for recovery this week?",
+            "Summarize my training consistency and biggest risk.",
+        ]
+        st.caption("Try asking:")
+        prompt_cols = st.columns(3)
+        for idx, suggested_prompt in enumerate(suggested_prompts):
+            if prompt_cols[idx].button(suggested_prompt, disabled=not ai_ready, use_container_width=True):
+                st.session_state.ai_chat_messages = [{"role": "user", "content": suggested_prompt}]
+                with st.spinner(f"Asking {provider}..."):
+                    try:
+                        answer = ai_insights.chat(summary, st.session_state.ai_chat_messages)
+                    except Exception as e:
+                        answer = f"I couldn't get an AI response for that question: {e}"
+                st.session_state.ai_chat_messages.append({"role": "assistant", "content": answer})
+                st.rerun()
+
         with st.expander("Aggregated summary that will be sent"):
             st.json(summary)
 

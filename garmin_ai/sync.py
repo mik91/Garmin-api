@@ -1,5 +1,5 @@
 import time
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from garminconnect import Garmin
 
@@ -126,5 +126,7 @@ def sync(days: int = 7):
             day += timedelta(days=1)
 
         db.set_last_synced_date(conn, today.isoformat())
+        db.set_sync_state(conn, "last_synced_at", datetime.now().isoformat(timespec="seconds"))
+        db.set_sync_state(conn, "last_sync_days", str(days))
 
     return start, today

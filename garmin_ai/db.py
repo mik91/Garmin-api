@@ -152,6 +152,11 @@ def get_last_synced_date(conn):
     return row["value"] if row else None
 
 
+def get_sync_state(conn) -> dict:
+    cur = conn.execute("SELECT key, value FROM sync_state")
+    return {row["key"]: row["value"] for row in cur.fetchall()}
+
+
 def set_last_synced_date(conn, date_str: str):
     conn.execute(
         """
@@ -159,6 +164,16 @@ def set_last_synced_date(conn, date_str: str):
         ON CONFLICT(key) DO UPDATE SET value=excluded.value
         """,
         (date_str,),
+    )
+
+
+def set_sync_state(conn, key: str, value: str):
+    conn.execute(
+        """
+        INSERT INTO sync_state (key, value) VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value
+        """,
+        (key, value),
     )
 
 

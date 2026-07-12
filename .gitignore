@@ -5,5 +5,4 @@ __pycache__/
 *.pyc
 .venv/
 venv/
-.streamlit/
 .claude/settings.local.json
