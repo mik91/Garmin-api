@@ -94,6 +94,17 @@ def fmt_pace(distance_m, duration_s):
     return f"{minutes}:{seconds:02d} /km"
 
 
+def fmt_time(seconds):
+    if seconds is None or pd.isna(seconds):
+        return None
+    seconds = int(round(float(seconds)))
+    hours, remainder = divmod(seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{seconds:02d}"
+    return f"{minutes}:{seconds:02d}"
+
+
 def apply_date_filter(df: pd.DataFrame, column: str, start: date, end: date) -> pd.DataFrame:
     if df.empty:
         return df
@@ -237,6 +248,80 @@ def clean_value(value):
     return value
 
 
+def activity_metric(row: pd.Series, key: str):
+    value = raw_value(row, key)
+    return clean_value(value)
+
+
+def best_activity_effort(activities: pd.DataFrame, key: str) -> dict | None:
+    efforts = []
+    for _, row in activities.iterrows():
+        seconds = activity_metric(row, key)
+        if seconds:
+            efforts.append((float(seconds), row))
+    if not efforts:
+        return None
+    seconds, row = min(efforts, key=lambda item: item[0])
+    return {
+        "activity": raw_value(row, "activityName", row["type"]),
+        "date": row["start_time"].date().isoformat() if not pd.isna(row["start_time"]) else None,
+        "seconds": clean_value(seconds),
+        "time": fmt_time(seconds),
+    }
+
+
+def summarize_running_details(activities: pd.DataFrame, start: date, end: date) -> dict | None:
+    if activities.empty or "category" not in activities:
+        return None
+
+    runs = activities[activities["category"] == "Running"].copy()
+    runs = runs.dropna(subset=["start_time"])
+    if runs.empty:
+        return None
+
+    runs["distance_km"] = runs["distance_m"] / 1000
+    runs["moving_duration_s"] = runs.apply(
+        lambda row: raw_value(row, "movingDuration", row["duration_s"]), axis=1
+    )
+    runs["pace_min_per_km"] = (runs["moving_duration_s"] / 60) / runs["distance_km"]
+    period_days = max((end - start).days + 1, 1)
+    weekly_volume_km = runs["distance_km"].sum(skipna=True) / period_days * 7
+
+    longest = runs.sort_values("distance_km", ascending=False).iloc[0]
+    recent_runs = runs.sort_values("start_time", ascending=False).head(8)
+
+    return {
+        "run_count": int(len(runs)),
+        "total_distance_km": clean_value(runs["distance_km"].sum(skipna=True)),
+        "estimated_weekly_volume_km": clean_value(weekly_volume_km),
+        "avg_run_distance_km": clean_value(runs["distance_km"].mean(skipna=True)),
+        "avg_pace_min_per_km": clean_value(runs["pace_min_per_km"].mean(skipna=True)),
+        "avg_pace": fmt_pace(runs["distance_m"].sum(skipna=True), runs["moving_duration_s"].sum(skipna=True)),
+        "best_5k": best_activity_effort(runs, "fastestSplit_5000"),
+        "best_10k": best_activity_effort(runs, "fastestSplit_10000"),
+        "best_1_mile": best_activity_effort(runs, "fastestSplit_1609"),
+        "longest_run": {
+            "activity": raw_value(longest, "activityName", longest["type"]),
+            "date": longest["start_time"].date().isoformat(),
+            "distance_km": clean_value(longest["distance_km"]),
+            "moving_time": fmt_time(longest["moving_duration_s"]),
+            "pace": fmt_pace(longest["distance_m"], longest["moving_duration_s"]),
+            "avg_hr": clean_value(longest["avg_hr"]),
+        },
+        "recent_runs": [
+            {
+                "date": row["start_time"].date().isoformat(),
+                "activity": raw_value(row, "activityName", row["type"]),
+                "distance_km": clean_value(row["distance_km"]),
+                "moving_time": fmt_time(row["moving_duration_s"]),
+                "pace": fmt_pace(row["distance_m"], row["moving_duration_s"]),
+                "avg_hr": clean_value(row["avg_hr"]),
+            }
+            for _, row in recent_runs.iterrows()
+        ],
+    }
+
+
 def build_current_view_summary(
     daily: pd.DataFrame,
     sleep: pd.DataFrame,
@@ -287,6 +372,9 @@ def build_current_view_summary(
                 "max_hr": clean_value(category_df["max_hr"].max(skipna=True)),
             }
         summary["activities_by_type"] = activity_summary
+        running_details = summarize_running_details(activities, start, end)
+        if running_details:
+            summary["running_details"] = running_details
 
     if not body.empty:
         summary["body_composition"] = {
