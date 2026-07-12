@@ -13,9 +13,9 @@ AQUA = "#1baf7a"
 YELLOW = "#eda100"
 VIOLET = "#4a3aa7"
 ROSE = "#c44764"
-INK = "#232323"
-MUTED = "#898781"
-GRID = "#e9e5dc"
+INK = "#e5edf7"
+MUTED = "#94a3b8"
+GRID = "#263246"
 ACTIVITY_COLORS = {
     "Running": BLUE,
     "Swimming": AQUA,
@@ -47,14 +47,14 @@ st.markdown(
     <style>
     .block-container {padding-top: 1.3rem;}
     [data-testid="stMetric"] {
-        background: #f8fafc;
-        border: 1px solid #e2e8f0;
+        background: #111827;
+        border: 1px solid #263246;
         border-radius: 8px;
         padding: 0.85rem 0.9rem;
     }
-    [data-testid="stMetricLabel"] {color: #475569;}
-    [data-testid="stMetricValue"] {color: #232323;}
-    div[data-testid="stDataFrame"] {border: 1px solid #e2e8f0; border-radius: 8px;}
+    [data-testid="stMetricLabel"] {color: #aab7c8;}
+    [data-testid="stMetricValue"] {color: #f8fafc;}
+    div[data-testid="stDataFrame"] {border: 1px solid #263246; border-radius: 8px;}
     </style>
     """,
     unsafe_allow_html=True,
@@ -274,6 +274,14 @@ def activity_type_label(value) -> str:
 
 
 def style_figure(fig: go.Figure, yaxis_title: str | None = None) -> go.Figure:
+    x_dates = []
+    for trace in fig.data:
+        x_values = getattr(trace, "x", None)
+        if x_values is None:
+            continue
+        parsed = pd.to_datetime(pd.Series(list(x_values)), errors="coerce").dropna()
+        x_dates.extend(parsed.tolist())
+
     fig.update_layout(
         margin=dict(l=10, r=10, t=26, b=10),
         height=340,
@@ -284,6 +292,16 @@ def style_figure(fig: go.Figure, yaxis_title: str | None = None) -> go.Figure:
         font=dict(color=INK),
     )
     fig.update_xaxes(showgrid=False)
+    if x_dates:
+        fig.update_xaxes(tickformat="%b %d<br>%Y", hoverformat="%b %d, %Y")
+        unique_dates = pd.Series(x_dates).drop_duplicates().sort_values()
+        if len(unique_dates) == 1:
+            center = pd.Timestamp(unique_dates.iloc[0])
+            fig.update_xaxes(
+                range=[center - pd.Timedelta(days=3), center + pd.Timedelta(days=3)],
+                tick0=center.normalize(),
+                dtick=24 * 60 * 60 * 1000,
+            )
     fig.update_yaxes(showgrid=True, gridcolor=GRID, zeroline=False, title=yaxis_title)
     return fig
 
