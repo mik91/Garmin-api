@@ -49,6 +49,11 @@ def _sync_activities(client: Garmin, conn, start: date, end: date):
             "avg_hr": a.get("averageHR"),
             "max_hr": a.get("maxHR"),
             "elevation_gain_m": a.get("elevationGain"),
+            "moving_duration_s": a.get("movingDuration"),
+            "avg_power": a.get("avgPower"),
+            "normalized_power": a.get("normPower"),
+            "aerobic_te": a.get("aerobicTrainingEffect"),
+            "anaerobic_te": a.get("anaerobicTrainingEffect"),
             "raw_json": db.dumps(a),
         }
         if row["activity_id"] is not None:

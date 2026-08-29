@@ -5,17 +5,17 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from garmin_ai import analysis, ai_insights, config
+from garmin_ai import analysis, ai_insights, config, insights_engine
 from garmin_ai import sync as sync_module
 
-BLUE = "#2a78d6"
-AQUA = "#1baf7a"
-YELLOW = "#eda100"
-VIOLET = "#4a3aa7"
-ROSE = "#c44764"
-INK = "#e5edf7"
-MUTED = "#94a3b8"
-GRID = "#263246"
+BLUE = "#60a5fa"
+AQUA = "#34d399"
+YELLOW = "#fbbf24"
+VIOLET = "#a78bfa"
+ROSE = "#fb7185"
+INK = "#eaf2ff"
+MUTED = "#a9b8cc"
+GRID = "#2a3951"
 ACTIVITY_COLORS = {
     "Running": BLUE,
     "Swimming": AQUA,
@@ -39,22 +39,180 @@ DATE_PRESETS = (
 )
 
 
-st.set_page_config(page_title="Garmin Insights", layout="wide")
+st.set_page_config(page_title="Garmin Insights", page_icon="🏃", layout="wide")
 
 
 st.markdown(
     """
     <style>
-    .block-container {padding-top: 1.3rem;}
-    [data-testid="stMetric"] {
-        background: #111827;
-        border: 1px solid #263246;
-        border-radius: 8px;
-        padding: 0.85rem 0.9rem;
+    :root {
+        --canvas: #09111f;
+        --surface: #111c2e;
+        --surface-raised: #162238;
+        --border: #2a3951;
+        --text: #eaf2ff;
+        --muted: #a9b8cc;
+        --accent: #60a5fa;
+        --radius: 14px;
     }
-    [data-testid="stMetricLabel"] {color: #aab7c8;}
-    [data-testid="stMetricValue"] {color: #f8fafc;}
-    div[data-testid="stDataFrame"] {border: 1px solid #263246; border-radius: 8px;}
+
+    html, body, .stApp {
+        font-family: "Segoe UI Variable", "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+    html {font-size: 16px;}
+    .stApp {
+        background:
+            radial-gradient(circle at 78% -10%, rgba(37, 99, 235, 0.10), transparent 32rem),
+            var(--canvas);
+        color: var(--text);
+    }
+    .block-container {
+        max-width: 1540px;
+        padding: 2.4rem 2.6rem 5rem;
+    }
+    h1, h2, h3, h4, h5, h6 {
+        color: var(--text);
+        font-weight: 700;
+        letter-spacing: -0.025em;
+        line-height: 1.2;
+    }
+    h1 {font-size: clamp(2rem, 3vw, 2.8rem) !important; margin-bottom: 0.35rem !important;}
+    h2 {font-size: 1.65rem !important; margin-top: 1.5rem !important;}
+    h3 {font-size: 1.3rem !important; margin-top: 1.2rem !important;}
+    p, li {line-height: 1.6;}
+    [data-testid="stCaptionContainer"] {color: var(--muted); font-size: 0.9rem; line-height: 1.5;}
+
+    .app-brand {
+        display: flex;
+        align-items: center;
+        gap: 0.8rem;
+        margin-bottom: 1.6rem;
+    }
+    .app-brand__mark {
+        display: grid;
+        width: 2.4rem;
+        height: 2.4rem;
+        place-items: center;
+        border-radius: 11px;
+        background: linear-gradient(145deg, #60a5fa, #2563eb);
+        box-shadow: 0 8px 20px rgba(37, 99, 235, 0.25);
+        font-size: 1.15rem;
+    }
+    .app-brand__name {font-size: 1.05rem; font-weight: 750; line-height: 1.2;}
+    .app-brand__tagline {color: var(--muted); font-size: 0.78rem; margin-top: 0.15rem;}
+    .page-kicker {
+        color: var(--accent);
+        font-size: 0.75rem;
+        font-weight: 750;
+        letter-spacing: 0.12em;
+        margin-bottom: 0.5rem;
+        text-transform: uppercase;
+    }
+    .page-title {font-size: clamp(2rem, 3vw, 2.8rem); font-weight: 750; letter-spacing: -0.035em; line-height: 1.1;}
+    .page-subtitle {color: var(--muted); font-size: 0.95rem; line-height: 1.6; margin: 0.65rem 0 1.25rem;}
+
+    section[data-testid="stSidebar"] {
+        width: 330px !important;
+        background: rgba(15, 24, 40, 0.98);
+        border-right: 1px solid var(--border);
+    }
+    section[data-testid="stSidebar"] > div {width: 330px !important;}
+    section[data-testid="stSidebar"] [data-testid="stSidebarContent"] {padding: 1.8rem 1.1rem 2.5rem;}
+    section[data-testid="stSidebar"] h3 {
+        font-size: 1rem !important;
+        letter-spacing: 0.01em;
+        margin-top: 1rem !important;
+    }
+    section[data-testid="stSidebar"] hr {margin: 1.8rem 0; border-color: var(--border);}
+
+    [data-testid="stHorizontalBlock"] {gap: 1rem; flex-wrap: wrap;}
+    [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
+        flex: 1 1 220px !important;
+        min-width: 220px;
+    }
+    [data-testid="stMetric"] {
+        min-height: 132px;
+        background: linear-gradient(145deg, rgba(22, 34, 56, 0.96), rgba(15, 25, 42, 0.96));
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 1rem 1.05rem;
+        box-shadow: 0 10px 28px rgba(2, 8, 23, 0.16);
+    }
+    [data-testid="stMetricLabel"] {color: var(--muted); font-size: 0.9rem; font-weight: 600;}
+    [data-testid="stMetricValue"] {color: var(--text); font-size: clamp(1.65rem, 2.1vw, 2.15rem); line-height: 1.2;}
+    [data-testid="stMetricDelta"] {font-size: 0.82rem; font-weight: 650;}
+
+    [data-testid="stTabs"] [data-baseweb="tab-list"] {
+        gap: 0.35rem;
+        border-bottom: 1px solid var(--border);
+        margin-bottom: 1rem;
+    }
+    [data-testid="stTabs"] button[role="tab"] {
+        min-height: 48px;
+        padding: 0.7rem 1rem;
+        color: var(--muted);
+        font-size: 0.95rem;
+        font-weight: 650;
+    }
+    [data-testid="stTabs"] button[role="tab"][aria-selected="true"] {color: var(--text);}
+
+    .stButton > button, .stDownloadButton > button {
+        min-height: 44px;
+        border: 1px solid #3b4d68;
+        border-radius: 10px;
+        font-size: 0.92rem;
+        font-weight: 700;
+        transition: border-color 120ms ease, background 120ms ease, transform 120ms ease;
+    }
+    .stButton > button:hover, .stDownloadButton > button:hover {
+        border-color: var(--accent);
+        background: rgba(96, 165, 250, 0.1);
+        transform: translateY(-1px);
+    }
+    [data-baseweb="select"] > div,
+    [data-testid="stNumberInput"] input,
+    [data-testid="stTextInput"] input,
+    [data-testid="stDateInput"] input,
+    [data-testid="stChatInput"] textarea {
+        min-height: 44px;
+        border-color: var(--border) !important;
+        border-radius: 10px !important;
+        background: #0d1728 !important;
+        font-size: 0.94rem;
+    }
+    [data-testid="stWidgetLabel"] p {font-size: 0.88rem; font-weight: 650; color: #d8e4f3;}
+
+    [data-testid="stAlert"] {
+        border: 1px solid rgba(148, 163, 184, 0.25);
+        border-radius: 12px;
+        padding: 0.85rem 1rem;
+    }
+    [data-testid="stAlert"] p {font-size: 0.94rem; line-height: 1.55;}
+    [data-testid="stPlotlyChart"] {
+        overflow: hidden;
+        border: 1px solid rgba(42, 57, 81, 0.72);
+        border-radius: var(--radius);
+        background: rgba(13, 23, 40, 0.56);
+        padding: 0.35rem;
+    }
+    div[data-testid="stDataFrame"] {
+        overflow: hidden;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+    }
+    [data-testid="stExpander"] {border: 1px solid var(--border); border-radius: 12px; background: rgba(17, 28, 46, 0.62);}
+    [data-testid="stChatMessage"] {border: 1px solid var(--border); border-radius: 14px; background: rgba(17, 28, 46, 0.7); padding: 0.4rem 0.65rem;}
+    hr {border-color: var(--border);}
+
+    @media (max-width: 900px) {
+        .block-container {padding: 1.35rem 1rem 4rem;}
+        section[data-testid="stSidebar"],
+        section[data-testid="stSidebar"] > div {width: auto !important;}
+        [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {flex-basis: 100% !important; min-width: 100%;}
+        [data-testid="stMetric"] {min-height: 112px;}
+        [data-testid="stTabs"] [data-baseweb="tab-list"] {overflow-x: auto;}
+        [data-testid="stTabs"] button[role="tab"] {padding-inline: 0.75rem; white-space: nowrap;}
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -283,15 +441,21 @@ def style_figure(fig: go.Figure, yaxis_title: str | None = None) -> go.Figure:
         x_dates.extend(parsed.tolist())
 
     fig.update_layout(
-        margin=dict(l=10, r=10, t=26, b=10),
-        height=340,
+        margin=dict(l=18, r=18, t=48, b=18),
+        height=360,
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
         legend_title_text="",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
         hovermode="x unified",
-        font=dict(color=INK),
+        font=dict(
+            color=INK,
+            family="Segoe UI Variable, Segoe UI, system-ui, sans-serif",
+            size=13,
+        ),
+        hoverlabel=dict(bgcolor="#162238", bordercolor=GRID, font=dict(color=INK, size=13)),
     )
-    fig.update_xaxes(showgrid=False)
+    fig.update_xaxes(showgrid=False, tickfont=dict(color=MUTED, size=12), automargin=True)
     if x_dates:
         fig.update_xaxes(tickformat="%b %d<br>%Y", hoverformat="%b %d, %Y")
         unique_dates = pd.Series(x_dates).drop_duplicates().sort_values()
@@ -302,7 +466,16 @@ def style_figure(fig: go.Figure, yaxis_title: str | None = None) -> go.Figure:
                 tick0=center.normalize(),
                 dtick=24 * 60 * 60 * 1000,
             )
-    fig.update_yaxes(showgrid=True, gridcolor=GRID, zeroline=False, title=yaxis_title)
+            fig.update_traces(width=18 * 60 * 60 * 1000, selector=dict(type="bar"))
+    fig.update_yaxes(
+        showgrid=True,
+        gridcolor=GRID,
+        zeroline=False,
+        title=yaxis_title,
+        tickfont=dict(color=MUTED, size=12),
+        title_font=dict(color=MUTED, size=12),
+        automargin=True,
+    )
     return fig
 
 
@@ -547,11 +720,14 @@ def build_current_view_summary(
     start: date,
     end: date,
     group_by: str,
+    insight_report: dict | None = None,
 ) -> dict:
     summary = {
         "date_range": {"start": start.isoformat(), "end": end.isoformat()},
         "chart_grouping": group_by,
     }
+    if insight_report:
+        summary["insight_engine"] = insight_report
 
     if not daily.empty:
         summary["daily_stats"] = {
@@ -649,7 +825,18 @@ if not body_df.empty:
 min_date = min(all_dates) if all_dates else date.today()
 max_date = max(all_dates) if all_dates else date.today()
 
-st.sidebar.header("Garmin Insights")
+st.sidebar.markdown(
+    """
+    <div class="app-brand">
+        <div class="app-brand__mark">↗</div>
+        <div>
+            <div class="app-brand__name">Garmin Insights</div>
+            <div class="app-brand__tagline">Training &amp; recovery dashboard</div>
+        </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 if startup_sync_status := st.session_state.get("startup_sync_status"):
     if startup_sync_status.startswith("Auto-synced"):
         st.sidebar.success(startup_sync_status)
@@ -673,7 +860,13 @@ st.sidebar.caption(
     f"Auto-sync: {'on' if config.GARMIN_AUTO_SYNC_ON_STARTUP else 'off'}"
     + (f" | {config.GARMIN_AUTO_SYNC_DAYS} days" if config.GARMIN_AUTO_SYNC_ON_STARTUP else "")
 )
-sync_days = st.sidebar.number_input("Days to sync", min_value=1, max_value=365, value=7)
+sync_days = st.sidebar.number_input(
+    "Days to sync",
+    min_value=1,
+    max_value=365,
+    value=7,
+    help="Choose how much recent Garmin history to refresh.",
+)
 if st.sidebar.button("Sync now", use_container_width=True):
     if not config.GARMIN_EMAIL or not config.GARMIN_PASSWORD:
         st.sidebar.error("Set GARMIN_EMAIL and GARMIN_PASSWORD in .env first.")
@@ -755,11 +948,27 @@ coach_notes = build_coach_notes(
     activities_filtered,
     previous_activities,
 )
+insight_report = insights_engine.generate_insights(
+    daily_stats,
+    sleep_df,
+    activities_df,
+    body_df,
+    start_date,
+    end_date,
+)
+priority_insights = insight_report.get("insights", [])[:5]
 
-st.title("Garmin Insights")
-st.caption(
-    f"{start_date:%b %d, %Y} to {end_date:%b %d, %Y} | grouped {period.lower()} | "
-    f"previous period: {previous_start_date:%b %d} to {previous_end_date:%b %d, %Y}"
+st.markdown(
+    f"""
+    <div class="page-kicker">Health and performance</div>
+    <div class="page-title">Your Garmin dashboard</div>
+    <div class="page-subtitle">
+        {start_date:%b %d, %Y} – {end_date:%b %d, %Y}
+        &nbsp;•&nbsp; Grouped {period.lower()}
+        &nbsp;•&nbsp; Compared with {previous_start_date:%b %d} – {previous_end_date:%b %d, %Y}
+    </div>
+    """,
+    unsafe_allow_html=True,
 )
 
 tab_overview, tab_trends, tab_training, tab_activities, tab_ai = st.tabs(
@@ -855,9 +1064,20 @@ with tab_overview:
 
         cols = st.columns([1, 1])
         with cols[0]:
-            st.subheader("Coach notes")
-            for note in coach_notes:
-                st.markdown(f"- {note}")
+            st.subheader("Insight engine")
+            if priority_insights:
+                for insight in priority_insights:
+                    title = f"{insight['category']}: {insight['title']}"
+                    detail = insight["detail"] + f" (Confidence: {insight.get('confidence', 'medium')}. {insight.get('action') or ''})"
+                    if insight["severity"] == "warning":
+                        st.warning(f"{title} - {detail}")
+                    elif insight["severity"] == "positive":
+                        st.success(f"{title} - {detail}")
+                    else:
+                        st.info(f"{title} - {detail}")
+            else:
+                for note in coach_notes:
+                    st.markdown(f"- {note}")
         with cols[1]:
             st.subheader("Data quality")
             if quality_notes:
@@ -1186,6 +1406,23 @@ with tab_training:
                         effort = running_details.get(key)
                         col.metric(label, effort["time"] if effort else "-")
 
+            sport_insights = [
+                insight
+                for insight in insight_report.get("insights", [])
+                if insight.get("category") in {sport_group, "Training load", "Recovery"}
+                or (sport_group == "All" and insight.get("category") in analysis.ACTIVITY_CATEGORIES)
+            ]
+            if sport_insights:
+                st.subheader("Training insights")
+                for insight in sport_insights[:4]:
+                    message = f"{insight['category']}: {insight['title']} - {insight['detail']}"
+                    if insight["severity"] == "warning":
+                        st.warning(message)
+                    elif insight["severity"] == "positive":
+                        st.success(message)
+                    else:
+                        st.info(message)
+
 with tab_activities:
     if activities_filtered.empty:
         st.info("No activities match the current filters.")
@@ -1388,6 +1625,7 @@ with tab_ai:
             start_date,
             end_date,
             period,
+            insight_report,
         )
         summary_json = json.dumps(summary, indent=2, default=str)
         summary_key = f"{provider}:{model}:{summary_json}"
@@ -1400,13 +1638,13 @@ with tab_ai:
 
         st.caption(f"Provider: {provider} / Model: {model}")
         st.subheader("Suggested focus")
-        for note in coach_notes:
-            st.markdown(f"- {note}")
+        for insight in priority_insights:
+            st.markdown(f"- **{insight['category']}**: {insight['detail']}")
 
         suggested_prompts = [
-            "What changed most compared with the previous period?",
+            "What are the most important signals in the insight engine report?",
             "What should I focus on for recovery this week?",
-            "Summarize my training consistency and biggest risk.",
+            "Summarize my training consistency, load risk, and sport-specific changes.",
         ]
         st.caption("Try asking:")
         prompt_cols = st.columns(3)
@@ -1442,7 +1680,6 @@ with tab_ai:
         if cols[1].button("Clear chat", use_container_width=True):
             st.session_state.ai_chat_messages = []
             st.rerun()
-
         st.divider()
         st.subheader("Chat about your Garmin data")
 
