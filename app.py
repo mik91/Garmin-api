@@ -249,6 +249,12 @@ def fmt_delta(value, suffix="", decimals=0, inverse_good: bool = False):
     return f"{float(value):+,.{decimals}f}{suffix}", direction
 
 
+def sync_error_message(error: Exception) -> str:
+    """Remain safe when Streamlit hot-reloads app.py before sync.py."""
+    formatter = getattr(sync_module, "friendly_error", None)
+    return formatter(error) if callable(formatter) else str(error)
+
+
 def fmt_duration(seconds, empty="-"):
     if seconds is None or pd.isna(seconds):
         return empty
@@ -802,7 +808,7 @@ def maybe_auto_sync_on_startup():
             )
         except Exception as e:
             st.session_state["startup_sync_status"] = (
-                f"Auto-sync paused: {sync_module.friendly_error(e)}"
+                f"Auto-sync paused: {sync_error_message(e)}"
             )
 
 
@@ -879,7 +885,7 @@ if st.sidebar.button("Sync now", use_container_width=True):
                 st.sidebar.success(f"Synced {sync_days} days: {start} to {end}.")
                 st.rerun()
             except Exception as e:
-                st.sidebar.error(f"Sync failed: {sync_module.friendly_error(e)}")
+                st.sidebar.error(f"Sync failed: {sync_error_message(e)}")
 
 st.sidebar.divider()
 st.sidebar.subheader("View")
