@@ -6,6 +6,37 @@ from garminconnect import Garmin
 from garmin_ai import config, db
 
 
+def friendly_error(error: Exception) -> str:
+    """Turn nested Garmin/network exceptions into useful UI guidance."""
+    messages = []
+    current = error
+    seen = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        messages.append(str(current))
+        current = current.__cause__ or current.__context__
+
+    detail = " ".join(messages).lower()
+    if "winerror 10013" in detail or "forbidden by its access permissions" in detail:
+        return (
+            "Network access to Garmin was blocked by the app runner or Windows. "
+            "Launch the dashboard with start.ps1 outside a restricted terminal; "
+            "if it still fails, allow Python through Windows Firewall."
+        )
+    if any(
+        phrase in detail
+        for phrase in (
+            "failed to establish a new connection",
+            "name or service not known",
+            "getaddrinfo failed",
+            "connection timed out",
+            "connecttimeouterror",
+        )
+    ):
+        return "Garmin Connect could not be reached. Check your internet connection and try again."
+    return str(error)
+
+
 def _get(d: dict, *path, default=None):
     """Walk a chain of possibly-missing dict keys, e.g. _get(d, 'a', 'b')."""
     cur = d

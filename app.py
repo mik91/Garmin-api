@@ -801,7 +801,9 @@ def maybe_auto_sync_on_startup():
                 f"Auto-synced {config.GARMIN_AUTO_SYNC_DAYS} days: {start} to {end}."
             )
         except Exception as e:
-            st.session_state["startup_sync_status"] = f"Auto-sync failed: {e}"
+            st.session_state["startup_sync_status"] = (
+                f"Auto-sync paused: {sync_module.friendly_error(e)}"
+            )
 
 
 maybe_auto_sync_on_startup()
@@ -877,7 +879,7 @@ if st.sidebar.button("Sync now", use_container_width=True):
                 st.sidebar.success(f"Synced {sync_days} days: {start} to {end}.")
                 st.rerun()
             except Exception as e:
-                st.sidebar.error(f"Sync failed: {e}")
+                st.sidebar.error(f"Sync failed: {sync_module.friendly_error(e)}")
 
 st.sidebar.divider()
 st.sidebar.subheader("View")
