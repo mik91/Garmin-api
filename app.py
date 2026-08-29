@@ -252,7 +252,19 @@ def fmt_delta(value, suffix="", decimals=0, inverse_good: bool = False):
 def sync_error_message(error: Exception) -> str:
     """Remain safe when Streamlit hot-reloads app.py before sync.py."""
     formatter = getattr(sync_module, "friendly_error", None)
-    return formatter(error) if callable(formatter) else str(error)
+    if callable(formatter):
+        return formatter(error)
+
+    # A stale imported module may not have the shared formatter yet. Keep the
+    # most common network failure useful until the next full process restart.
+    detail = str(error)
+    if "WinError 10013" in detail or "forbidden by its access permissions" in detail:
+        return (
+            "Network access to Garmin was blocked by the app runner or Windows. "
+            "Launch the dashboard with start.ps1 outside a restricted terminal; "
+            "if it still fails, allow Python through Windows Firewall."
+        )
+    return detail
 
 
 def fmt_duration(seconds, empty="-"):
