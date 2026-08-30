@@ -814,7 +814,10 @@ def maybe_auto_sync_on_startup():
 
     with st.spinner("Syncing with Garmin Connect..."):
         try:
-            start, end = sync_module.sync(days=config.GARMIN_AUTO_SYNC_DAYS)
+            start, end = sync_module.sync(
+                days=config.GARMIN_AUTO_SYNC_DAYS,
+                reuse_today=True,
+            )
             st.session_state["startup_sync_status"] = (
                 f"Auto-synced {config.GARMIN_AUTO_SYNC_DAYS} days: {start} to {end}."
             )

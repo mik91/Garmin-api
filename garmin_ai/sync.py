@@ -1,9 +1,40 @@
+import os
+import sqlite3
 import time
+from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 
 from garminconnect import Garmin
 
 from garmin_ai import config, db
+
+
+@contextmanager
+def _sync_guard(timeout_seconds: int = 600):
+    """Serialize syncs across Streamlit sessions and separate processes."""
+    lock_path = f"{config.DB_PATH}.sync-lock"
+    os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+    lock_conn = sqlite3.connect(lock_path, timeout=timeout_seconds)
+    try:
+        lock_conn.execute(f"PRAGMA busy_timeout = {timeout_seconds * 1000}")
+        lock_conn.execute(
+            "CREATE TABLE IF NOT EXISTS sync_guard (id INTEGER PRIMARY KEY)"
+        )
+        lock_conn.commit()
+        lock_conn.execute("BEGIN EXCLUSIVE")
+        yield
+    finally:
+        lock_conn.rollback()
+        lock_conn.close()
+
+
+def _today_sync_covers(conn, days: int, today: date) -> bool:
+    state = db.get_sync_state(conn)
+    try:
+        synced_days = int(state.get("last_sync_days", "0"))
+    except (TypeError, ValueError):
+        synced_days = 0
+    return state.get("last_synced_date") == today.isoformat() and synced_days >= days
 
 
 def friendly_error(error: Exception) -> str:
@@ -144,25 +175,30 @@ def _sync_body_composition(client: Garmin, conn, day: date):
         db.upsert_body_composition(conn, row)
 
 
-def sync(days: int = 7):
+def sync(days: int = 7, reuse_today: bool = False):
     """Pull the last `days` days of data."""
-    client = login()
-
-    with db.get_connection() as conn:
+    with _sync_guard():
         today = date.today()
         start = today - timedelta(days=days - 1)
 
-        _sync_activities(client, conn, start, today)
+        if reuse_today:
+            with db.get_connection() as conn:
+                if _today_sync_covers(conn, days, today):
+                    return start, today
 
-        day = start
-        while day <= today:
-            _sync_sleep(client, conn, day)
-            _sync_daily_stats(client, conn, day)
-            _sync_body_composition(client, conn, day)
-            day += timedelta(days=1)
+        client = login()
+        with db.get_connection() as conn:
+            _sync_activities(client, conn, start, today)
 
-        db.set_last_synced_date(conn, today.isoformat())
-        db.set_sync_state(conn, "last_synced_at", datetime.now().isoformat(timespec="seconds"))
-        db.set_sync_state(conn, "last_sync_days", str(days))
+            day = start
+            while day <= today:
+                _sync_sleep(client, conn, day)
+                _sync_daily_stats(client, conn, day)
+                _sync_body_composition(client, conn, day)
+                day += timedelta(days=1)
+
+            db.set_last_synced_date(conn, today.isoformat())
+            db.set_sync_state(conn, "last_synced_at", datetime.now().isoformat(timespec="seconds"))
+            db.set_sync_state(conn, "last_sync_days", str(days))
 
     return start, today
