@@ -145,13 +145,13 @@ def upsert_activity(conn, activity: dict):
             avg_hr=excluded.avg_hr,
             max_hr=excluded.max_hr,
             elevation_gain_m=excluded.elevation_gain_m,
-            moving_duration_s=excluded.moving_duration_s,
-            avg_power=excluded.avg_power,
-            normalized_power=excluded.normalized_power,
-            aerobic_te=excluded.aerobic_te,
-            anaerobic_te=excluded.anaerobic_te,
-            splits_json=excluded.splits_json,
-            exercise_sets_json=excluded.exercise_sets_json,
+            moving_duration_s=COALESCE(excluded.moving_duration_s, activities.moving_duration_s),
+            avg_power=COALESCE(excluded.avg_power, activities.avg_power),
+            normalized_power=COALESCE(excluded.normalized_power, activities.normalized_power),
+            aerobic_te=COALESCE(excluded.aerobic_te, activities.aerobic_te),
+            anaerobic_te=COALESCE(excluded.anaerobic_te, activities.anaerobic_te),
+            splits_json=COALESCE(excluded.splits_json, activities.splits_json),
+            exercise_sets_json=COALESCE(excluded.exercise_sets_json, activities.exercise_sets_json),
             raw_json=excluded.raw_json
         """,
         activity,
@@ -199,15 +199,15 @@ def upsert_daily_stats(conn, row: dict):
             body_battery_high=excluded.body_battery_high,
             body_battery_low=excluded.body_battery_low,
             calories=excluded.calories,
-            hrv_overnight=excluded.hrv_overnight,
-            training_readiness=excluded.training_readiness,
-            training_status=excluded.training_status,
-            vo2_max=excluded.vo2_max,
-            recovery_time_hours=excluded.recovery_time_hours,
-            moderate_intensity_min=excluded.moderate_intensity_min,
-            vigorous_intensity_min=excluded.vigorous_intensity_min,
-            avg_respiration=excluded.avg_respiration,
-            avg_spo2=excluded.avg_spo2,
+            hrv_overnight=COALESCE(excluded.hrv_overnight, daily_stats.hrv_overnight),
+            training_readiness=COALESCE(excluded.training_readiness, daily_stats.training_readiness),
+            training_status=COALESCE(excluded.training_status, daily_stats.training_status),
+            vo2_max=COALESCE(excluded.vo2_max, daily_stats.vo2_max),
+            recovery_time_hours=COALESCE(excluded.recovery_time_hours, daily_stats.recovery_time_hours),
+            moderate_intensity_min=COALESCE(excluded.moderate_intensity_min, daily_stats.moderate_intensity_min),
+            vigorous_intensity_min=COALESCE(excluded.vigorous_intensity_min, daily_stats.vigorous_intensity_min),
+            avg_respiration=COALESCE(excluded.avg_respiration, daily_stats.avg_respiration),
+            avg_spo2=COALESCE(excluded.avg_spo2, daily_stats.avg_spo2),
             raw_json=excluded.raw_json
         """,
         row,
@@ -266,6 +266,7 @@ def get_goals(conn) -> dict:
 
 
 def set_goals(conn, goals: dict):
+    conn.execute("DELETE FROM goals")
     conn.executemany(
         """
         INSERT INTO goals (key, value) VALUES (?, ?)

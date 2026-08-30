@@ -16,6 +16,7 @@ class Insight:
     value: float | None = None
     baseline: float | None = None
     confidence: str = "medium"
+    sample_size: int | None = None
     action: str | None = None
 
     def as_dict(self) -> dict:
@@ -28,6 +29,7 @@ class Insight:
             "value": self.value,
             "baseline": self.baseline,
             "confidence": self.confidence,
+            "sample_size": self.sample_size,
             "action": self.action,
         }
 
@@ -50,6 +52,12 @@ def _sum(df: pd.DataFrame, column: str):
     if df.empty or column not in df or not df[column].notna().any():
         return None
     return _clean(df[column].sum(skipna=True))
+
+
+def _count(df: pd.DataFrame, column: str) -> int:
+    if df.empty or column not in df:
+        return 0
+    return int(df[column].notna().sum())
 
 
 def _pct_change(current, baseline):
@@ -113,6 +121,23 @@ def _metrics(
         "avg_resting_hr": _mean(daily, "resting_hr"),
         "avg_stress": _mean(daily, "stress_avg"),
         "avg_body_battery_high": _mean(daily, "body_battery_high"),
+        "avg_hrv_overnight": _mean(daily, "hrv_overnight"),
+        "avg_training_readiness": _mean(daily, "training_readiness"),
+        "avg_recovery_time_hours": _mean(daily, "recovery_time_hours"),
+        "latest_training_status": _clean(daily["training_status"].dropna().iloc[-1])
+        if "training_status" in daily and daily["training_status"].notna().any()
+        else None,
+        "latest_vo2_max": _clean(daily["vo2_max"].dropna().iloc[-1])
+        if "vo2_max" in daily and daily["vo2_max"].notna().any()
+        else None,
+        "moderate_intensity_min": _sum(daily, "moderate_intensity_min"),
+        "vigorous_intensity_min": _sum(daily, "vigorous_intensity_min"),
+        "avg_respiration": _mean(daily, "avg_respiration"),
+        "avg_spo2": _mean(daily, "avg_spo2"),
+        "hrv_days": _count(daily, "hrv_overnight"),
+        "readiness_days": _count(daily, "training_readiness"),
+        "recovery_days": _count(daily, "recovery_time_hours"),
+        "vo2_days": _count(daily, "vo2_max"),
         "avg_sleep_hours": (_mean(sleep, "total_sleep_s") or 0) / 3600 if _mean(sleep, "total_sleep_s") is not None else None,
         "avg_sleep_score": _mean(sleep, "sleep_score"),
         "distance_km": distance_m / 1000 if distance_m is not None else None,
@@ -144,7 +169,20 @@ def _running_pace_min_per_km(activities: pd.DataFrame):
     if activities.empty:
         return None
     distance_m = _sum(activities, "distance_m")
-    duration_s = _sum(activities, "duration_s")
+    duration_s = 0.0
+    for _, row in activities.iterrows():
+        moving = row.get("moving_duration_s")
+        if moving is None or pd.isna(moving):
+            try:
+                import json
+
+                moving = json.loads(row.get("raw_json") or "{}").get("movingDuration")
+            except (TypeError, ValueError):
+                moving = None
+        if moving is None or pd.isna(moving):
+            moving = row.get("duration_s")
+        if moving is not None and not pd.isna(moving):
+            duration_s += float(moving)
     if not distance_m or not duration_s:
         return None
     return (duration_s / 60) / (distance_m / 1000)
@@ -183,6 +221,7 @@ def _add_change_insights(insights: list[Insight], current: dict, previous: dict,
                 "avg_steps",
                 current.get("avg_steps"),
                 previous.get("avg_steps"),
+                sample_size=min(current.get("daily_days", 0), previous.get("daily_days", 0)),
             )
         )
 
@@ -197,6 +236,7 @@ def _add_change_insights(insights: list[Insight], current: dict, previous: dict,
                 "avg_sleep_hours",
                 current.get("avg_sleep_hours"),
                 baseline.get("avg_sleep_hours"),
+                sample_size=min(current.get("sleep_nights", 0), baseline.get("sleep_nights", 0)),
             )
         )
 
@@ -211,6 +251,43 @@ def _add_change_insights(insights: list[Insight], current: dict, previous: dict,
                 "avg_resting_hr",
                 current.get("avg_resting_hr"),
                 baseline.get("avg_resting_hr"),
+                sample_size=min(current.get("daily_days", 0), baseline.get("daily_days", 0)),
+            )
+        )
+
+    hrv_change = _pct_change(
+        current.get("avg_hrv_overnight"), baseline.get("avg_hrv_overnight")
+    )
+    if hrv_change is not None and abs(hrv_change) >= 10:
+        insights.append(
+            Insight(
+                "Recovery",
+                "positive" if hrv_change > 0 else "warning",
+                "Overnight HRV shifted",
+                f"Average overnight HRV is {abs(hrv_change):.0f}% {'above' if hrv_change > 0 else 'below'} baseline.",
+                "avg_hrv_overnight",
+                current.get("avg_hrv_overnight"),
+                baseline.get("avg_hrv_overnight"),
+                sample_size=min(current.get("hrv_days", 0), baseline.get("hrv_days", 0)),
+            )
+        )
+
+    readiness_diff = _diff(
+        current.get("avg_training_readiness"), baseline.get("avg_training_readiness")
+    )
+    if readiness_diff is not None and abs(readiness_diff) >= 10:
+        insights.append(
+            Insight(
+                "Recovery",
+                "positive" if readiness_diff > 0 else "warning",
+                "Training readiness changed",
+                f"Average training readiness is {abs(readiness_diff):.0f} points {'above' if readiness_diff > 0 else 'below'} baseline.",
+                "avg_training_readiness",
+                current.get("avg_training_readiness"),
+                baseline.get("avg_training_readiness"),
+                sample_size=min(
+                    current.get("readiness_days", 0), baseline.get("readiness_days", 0)
+                ),
             )
         )
 
@@ -225,20 +302,27 @@ def _add_change_insights(insights: list[Insight], current: dict, previous: dict,
                 "avg_stress",
                 current.get("avg_stress"),
                 baseline.get("avg_stress"),
+                sample_size=min(current.get("daily_days", 0), baseline.get("daily_days", 0)),
             )
         )
 
-    volume_change = _pct_change(current.get("weekly_training_load") or current.get("weekly_distance_km"), previous.get("weekly_training_load") or previous.get("weekly_distance_km"))
+    using_load = current.get("weekly_training_load") is not None and previous.get("weekly_training_load") is not None
+    volume_metric = "weekly_training_load" if using_load else "weekly_distance_km"
+    volume_change = _pct_change(current.get(volume_metric), previous.get(volume_metric))
     if volume_change is not None and abs(volume_change) >= 20:
+        volume_label = "training load" if using_load else "distance"
         insights.append(
             Insight(
                 "Training load",
                 "warning" if volume_change > 25 else "notice",
                 "Training volume changed",
-                f"Weekly-equivalent distance is {abs(volume_change):.0f}% {'higher' if volume_change > 0 else 'lower'} than the previous period.",
-                "weekly_distance_km",
-                current.get("weekly_distance_km"),
-                previous.get("weekly_distance_km"),
+                f"Weekly-equivalent {volume_label} is {abs(volume_change):.0f}% {'higher' if volume_change > 0 else 'lower'} than the previous period.",
+                volume_metric,
+                current.get(volume_metric),
+                previous.get(volume_metric),
+                sample_size=min(
+                    current.get("activity_count", 0), previous.get("activity_count", 0)
+                ),
             )
         )
 
@@ -246,7 +330,13 @@ def _add_change_insights(insights: list[Insight], current: dict, previous: dict,
 def _add_combination_insights(insights: list[Insight], current: dict, baseline: dict):
     sleep_diff = _diff(current.get("avg_sleep_hours"), baseline.get("avg_sleep_hours"))
     hr_diff = _diff(current.get("avg_resting_hr"), baseline.get("avg_resting_hr"))
-    volume_change = _pct_change(current.get("weekly_training_load") or current.get("weekly_distance_km"), baseline.get("weekly_training_load") or baseline.get("weekly_distance_km"))
+    volume_metric = (
+        "weekly_training_load"
+        if current.get("weekly_training_load") is not None
+        and baseline.get("weekly_training_load") is not None
+        else "weekly_distance_km"
+    )
+    volume_change = _pct_change(current.get(volume_metric), baseline.get(volume_metric))
 
     if sleep_diff is not None and hr_diff is not None and sleep_diff <= -0.4 and hr_diff >= 3:
         insights.append(
@@ -255,6 +345,7 @@ def _add_combination_insights(insights: list[Insight], current: dict, baseline: 
                 "warning",
                 "Recovery pressure is elevated",
                 "Sleep is below baseline while resting HR is above baseline, a combination worth watching before adding intensity.",
+                sample_size=min(current.get("sleep_nights", 0), baseline.get("sleep_nights", 0)),
             )
         )
 
@@ -265,6 +356,26 @@ def _add_combination_insights(insights: list[Insight], current: dict, baseline: 
                 "warning",
                 "Load spike with higher resting HR",
                 "Training volume is up sharply while resting HR is also elevated, which can point to accumulating fatigue.",
+                sample_size=min(
+                    current.get("activity_count", 0), baseline.get("activity_count", 0)
+                ),
+            )
+        )
+
+    hrv_change = _pct_change(
+        current.get("avg_hrv_overnight"), baseline.get("avg_hrv_overnight")
+    )
+    readiness = current.get("avg_training_readiness")
+    if hrv_change is not None and hrv_change <= -10 and readiness is not None and readiness < 50:
+        insights.append(
+            Insight(
+                "Recovery",
+                "warning",
+                "Recovery signals are aligned downward",
+                "Overnight HRV is below baseline while training readiness is also low; consider reducing intensity until the trend improves.",
+                sample_size=min(
+                    current.get("hrv_days", 0), current.get("readiness_days", 0)
+                ),
             )
         )
 
@@ -290,9 +401,10 @@ def _add_sport_insights(
                     "warning" if volume_change > 30 else "notice",
                     f"{sport} volume changed",
                     f"{sport} weekly-equivalent training time is {abs(volume_change):.0f}% {'higher' if volume_change > 0 else 'lower'} than the previous period.",
-                    "weekly_distance_km",
-                    summary.get("weekly_distance_km"),
-                    previous.get("weekly_distance_km"),
+                    "weekly_duration_hours",
+                    summary.get("weekly_duration_hours"),
+                    previous.get("weekly_duration_hours"),
+                    sample_size=min(count, previous.get("count") or 0),
                 )
             )
 
@@ -309,6 +421,7 @@ def _add_sport_insights(
                         "pace_min_per_km",
                         summary.get("pace_min_per_km"),
                         baseline.get("pace_min_per_km"),
+                        sample_size=min(count, baseline.get("count") or 0),
                     )
                 )
             elif pace_change >= 0.2 and hr_change >= 3:
@@ -321,14 +434,30 @@ def _add_sport_insights(
                         "pace_min_per_km",
                         summary.get("pace_min_per_km"),
                         baseline.get("pace_min_per_km"),
+                        sample_size=min(count, baseline.get("count") or 0),
                     )
                 )
 
 
 def _enrich_insight(insight: Insight, current: dict) -> None:
-    samples = max(current.get("daily_days", 0), current.get("sleep_nights", 0), current.get("activity_count", 0))
-    insight.confidence = "high" if samples >= 21 else "medium" if samples >= 7 else "low"
-    if insight.severity == "warning":
+    samples = insight.sample_size
+    if samples is None:
+        samples = max(
+            current.get("daily_days", 0),
+            current.get("sleep_nights", 0),
+            current.get("activity_count", 0),
+        )
+        insight.sample_size = samples
+
+    sport_categories = {"Running", "Cycling", "Swimming", "Other", "Training load"}
+    high_threshold, medium_threshold = (8, 4) if insight.category in sport_categories else (14, 7)
+    insight.confidence = (
+        "high" if samples >= high_threshold else "medium" if samples >= medium_threshold else "low"
+    )
+
+    if insight.confidence == "low":
+        insight.action = "Treat this as an early signal and collect more comparable samples before changing your plan."
+    elif insight.severity == "warning":
         insight.action = "Review the underlying trend and keep the next session easy if recovery signals are also unfavorable."
     elif insight.severity == "positive":
         insight.action = "Keep the routine that produced this result consistent and monitor it over the next few weeks."

@@ -1,3 +1,4 @@
+import importlib
 import json
 from datetime import date, datetime, timedelta
 
@@ -7,6 +8,13 @@ import streamlit as st
 
 from garmin_ai import analysis, ai_insights, config, insights_engine
 from garmin_ai import sync as sync_module
+
+# Streamlit can retain the previous module object across a hot reload. Reload it
+# when a newly added analysis helper is missing so the app remains restart-safe.
+if not hasattr(analysis, "load_goals"):
+    analysis = importlib.reload(analysis)
+if "sample_size" not in getattr(insights_engine.Insight, "__annotations__", {}):
+    insights_engine = importlib.reload(insights_engine)
 
 BLUE = "#60a5fa"
 AQUA = "#34d399"
@@ -433,6 +441,12 @@ def mean_or_none(df: pd.DataFrame, column: str):
     return df[column].mean(skipna=True)
 
 
+def latest_or_none(df: pd.DataFrame, column: str):
+    if df.empty or column not in df or not df[column].notna().any():
+        return None
+    return df[column].dropna().iloc[-1]
+
+
 def diff(current, previous):
     if current is None or previous is None or pd.isna(current) or pd.isna(previous):
         return None
@@ -557,6 +571,15 @@ def build_data_quality_notes(
         notes.append("No daily stats in the selected range.")
     elif daily["date"].dt.date.nunique() < max(1, expected_days * 0.6):
         notes.append("Daily stats cover less than 60% of this date range.")
+    else:
+        recovery_fields = ["hrv_overnight", "training_readiness", "recovery_time_hours"]
+        recovery_coverage = [
+            daily[field].notna().mean() for field in recovery_fields if field in daily
+        ]
+        if recovery_coverage and sum(recovery_coverage) / len(recovery_coverage) < 0.5:
+            notes.append(
+                "Recovery metrics are sparse; sync this range again to add HRV and training readiness."
+            )
 
     if sleep.empty:
         notes.append("No sleep records in the selected range.")
@@ -570,6 +593,8 @@ def build_data_quality_notes(
 
     if body.empty:
         notes.append("No body composition entries in this range.")
+    elif "body_fat_pct" in body and not body["body_fat_pct"].notna().any():
+        notes.append("Weight is available, but Garmin has no body-fat readings for this range.")
 
     return notes[:5]
 
@@ -652,7 +677,9 @@ def clean_value(value):
     if value is None or pd.isna(value):
         return None
     if hasattr(value, "item"):
-        return value.item()
+        value = value.item()
+    if isinstance(value, float):
+        return round(value, 2)
     return value
 
 
@@ -739,6 +766,7 @@ def build_current_view_summary(
     end: date,
     group_by: str,
     insight_report: dict | None = None,
+    goals: dict | None = None,
 ) -> dict:
     summary = {
         "date_range": {"start": start.isoformat(), "end": end.isoformat()},
@@ -746,6 +774,8 @@ def build_current_view_summary(
     }
     if insight_report:
         summary["insight_engine"] = insight_report
+    if goals:
+        summary["personal_goals"] = {key: value for key, value in goals.items() if value}
 
     if not daily.empty:
         summary["daily_stats"] = {
@@ -757,7 +787,46 @@ def build_current_view_summary(
             "avg_body_battery_high": clean_value(daily["body_battery_high"].mean(skipna=True)),
             "avg_body_battery_low": clean_value(daily["body_battery_low"].mean(skipna=True)),
             "total_calories": clean_value(daily["calories"].sum(skipna=True)),
+            "avg_overnight_hrv": clean_value(daily["hrv_overnight"].mean(skipna=True)),
+            "avg_training_readiness": clean_value(
+                daily["training_readiness"].mean(skipna=True)
+            ),
+            "latest_training_status": clean_value(
+                daily["training_status"].dropna().iloc[-1]
+            )
+            if daily["training_status"].notna().any()
+            else None,
+            "latest_vo2_max": clean_value(daily["vo2_max"].dropna().iloc[-1])
+            if daily["vo2_max"].notna().any()
+            else None,
+            "avg_recovery_time_hours": clean_value(
+                daily["recovery_time_hours"].mean(skipna=True)
+            ),
+            "moderate_intensity_minutes": clean_value(
+                daily["moderate_intensity_min"].sum(skipna=True)
+            ),
+            "vigorous_intensity_minutes": clean_value(
+                daily["vigorous_intensity_min"].sum(skipna=True)
+            ),
+            "avg_respiration": clean_value(daily["avg_respiration"].mean(skipna=True)),
+            "avg_spo2": clean_value(daily["avg_spo2"].mean(skipna=True)),
         }
+        trend_columns = [
+            "steps",
+            "resting_hr",
+            "stress_avg",
+            "body_battery_high",
+            "hrv_overnight",
+            "training_readiness",
+            "recovery_time_hours",
+        ]
+        summary["recent_daily_trend"] = [
+            {
+                "date": row["date"].date().isoformat(),
+                **{column: clean_value(row[column]) for column in trend_columns},
+            }
+            for _, row in daily.sort_values("date").tail(14).iterrows()
+        ]
 
     if not sleep.empty:
         summary["sleep"] = {
@@ -769,6 +838,14 @@ def build_current_view_summary(
             "avg_awake_hours": clean_value(sleep["awake_s"].mean(skipna=True) / 3600),
             "avg_sleep_score": clean_value(sleep["sleep_score"].mean(skipna=True)),
         }
+        summary["recent_sleep_trend"] = [
+            {
+                "date": row["date"].date().isoformat(),
+                "total_sleep_hours": clean_value(row["total_sleep_s"] / 3600),
+                "sleep_score": clean_value(row["sleep_score"]),
+            }
+            for _, row in sleep.sort_values("date").tail(14).iterrows()
+        ]
 
     if not activities.empty:
         activity_summary = {}
@@ -834,6 +911,7 @@ sleep_df = analysis.load_sleep()
 activities_df = analysis.ensure_activity_categories(analysis.load_activities())
 body_df = analysis.load_body_composition()
 sync_state = analysis.load_sync_state()
+goals = analysis.load_goals()
 
 all_dates = []
 if not daily_stats.empty:
@@ -1084,6 +1162,30 @@ with tab_overview:
             delta=distance_delta[0] if distance_delta else None,
             delta_color=distance_delta[1] if distance_delta else "normal",
         )
+
+        recovery_values = {
+            "hrv": latest_or_none(daily_filtered, "hrv_overnight"),
+            "readiness": latest_or_none(daily_filtered, "training_readiness"),
+            "status": latest_or_none(daily_filtered, "training_status"),
+            "vo2": latest_or_none(daily_filtered, "vo2_max"),
+            "recovery": latest_or_none(daily_filtered, "recovery_time_hours"),
+        }
+        if any(value is not None for value in recovery_values.values()):
+            st.subheader("Recovery snapshot")
+            recovery_cols = st.columns(5)
+            recovery_cols[0].metric(
+                "Overnight HRV", fmt_number(recovery_values["hrv"], " ms")
+            )
+            recovery_cols[1].metric(
+                "Training readiness", fmt_number(recovery_values["readiness"])
+            )
+            recovery_cols[2].metric(
+                "Training status", recovery_values["status"] or "-"
+            )
+            recovery_cols[3].metric("VO₂ max", fmt_number(recovery_values["vo2"], decimals=1))
+            recovery_cols[4].metric(
+                "Recovery time", fmt_number(recovery_values["recovery"], " h", 1)
+            )
 
         cols = st.columns([1, 1])
         with cols[0]:
@@ -1640,6 +1742,38 @@ with tab_ai:
         elif not ai_ready:
             st.warning(ai_insights.missing_config_message())
 
+        with st.expander("Personal goals & context"):
+            st.caption(
+                "This context is included with AI requests so recommendations match your priorities."
+            )
+            with st.form("personal_goals_form"):
+                primary_goal = st.text_input(
+                    "Primary goal",
+                    value=goals.get("primary_goal", ""),
+                    placeholder="Example: Improve 10K time while maintaining swim fitness",
+                )
+                target_event = st.text_input(
+                    "Target event or date",
+                    value=goals.get("target_event", ""),
+                    placeholder="Example: Toronto Waterfront 10K — October 18",
+                )
+                constraints = st.text_area(
+                    "Preferences, injuries, or constraints",
+                    value=goals.get("constraints", ""),
+                    placeholder="Example: Four training days per week; protect the left Achilles",
+                    height=90,
+                )
+                save_goals = st.form_submit_button("Save context")
+            if save_goals:
+                analysis.save_goals(
+                    {
+                        "primary_goal": primary_goal.strip(),
+                        "target_event": target_event.strip(),
+                        "constraints": constraints.strip(),
+                    }
+                )
+                st.rerun()
+
         summary = build_current_view_summary(
             daily_filtered,
             sleep_filtered,
@@ -1649,6 +1783,7 @@ with tab_ai:
             end_date,
             period,
             insight_report,
+            goals,
         )
         summary_json = json.dumps(summary, indent=2, default=str)
         summary_key = f"{provider}:{model}:{summary_json}"

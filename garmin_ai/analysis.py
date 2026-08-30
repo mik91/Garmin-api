@@ -62,6 +62,16 @@ def load_sync_state() -> dict:
         return db.get_sync_state(conn)
 
 
+def load_goals() -> dict:
+    with db.get_connection() as conn:
+        return db.get_goals(conn)
+
+
+def save_goals(goals: dict) -> None:
+    with db.get_connection() as conn:
+        db.set_goals(conn, goals)
+
+
 def add_rolling_averages(df: pd.DataFrame, column: str, windows=(7, 30)) -> pd.DataFrame:
     df = df.copy()
     for w in windows:

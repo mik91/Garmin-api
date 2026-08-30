@@ -98,6 +98,33 @@ def _with_retry(fn, *args, retries=3, backoff=5, **kwargs):
             time.sleep(backoff * (attempt + 1))
 
 
+def _optional_call(fn, *args, **kwargs):
+    """Return optional Garmin metrics without aborting the core daily sync."""
+    try:
+        return fn(*args, **kwargs)
+    except Exception:
+        return None
+
+
+def _primary_device_record(mapping) -> dict:
+    if not isinstance(mapping, dict):
+        return {}
+    records = [value for value in mapping.values() if isinstance(value, dict)]
+    return next(
+        (record for record in records if record.get("primaryTrainingDevice")),
+        records[0] if records else {},
+    )
+
+
+def _status_label(value) -> str | None:
+    if not value:
+        return None
+    parts = str(value).split("_")
+    if parts and parts[-1].isdigit():
+        parts.pop()
+    return " ".join(parts).title()
+
+
 def _sync_activities(client: Garmin, conn, start: date, end: date):
     activities = _with_retry(client.get_activities_by_date, start.isoformat(), end.isoformat()) or []
     for a in activities:
@@ -125,7 +152,7 @@ def _sync_activities(client: Garmin, conn, start: date, end: date):
 def _sync_sleep(client: Garmin, conn, day: date):
     data = _with_retry(client.get_sleep_data, day.isoformat())
     if not data:
-        return
+        return None
     dto = _get(data, "dailySleepDTO", default={}) or {}
     row = {
         "date": day.isoformat(),
@@ -139,20 +166,49 @@ def _sync_sleep(client: Garmin, conn, day: date):
         "raw_json": db.dumps(data),
     }
     db.upsert_sleep(conn, row)
+    return data
 
 
-def _sync_daily_stats(client: Garmin, conn, day: date):
+def _sync_daily_stats(client: Garmin, conn, day: date, sleep_data: dict | None = None):
     data = _with_retry(client.get_stats, day.isoformat())
     if not data:
         return
+
+    day_text = day.isoformat()
+    readiness = _optional_call(client.get_morning_training_readiness, day_text) or {}
+    training = _optional_call(client.get_training_status, day_text) or {}
+    status_map = (
+        (training.get("mostRecentTrainingStatus") or {}).get("latestTrainingStatusData")
+        or {}
+    )
+    status = _primary_device_record(status_map)
+    vo2 = (training.get("mostRecentVO2Max") or {}).get("generic") or {}
+    sleep_data = sleep_data or {}
+    recovery_minutes = readiness.get("recoveryTime")
+    if readiness.get("recoveryTimeChangePhrase") == "REACHED_ZERO":
+        recovery_minutes = 0
+
     row = {
-        "date": day.isoformat(),
+        "date": day_text,
         "steps": data.get("totalSteps"),
         "resting_hr": data.get("restingHeartRate"),
         "stress_avg": data.get("averageStressLevel"),
         "body_battery_high": data.get("bodyBatteryHighestValue"),
         "body_battery_low": data.get("bodyBatteryLowestValue"),
         "calories": data.get("totalKilocalories"),
+        "hrv_overnight": sleep_data.get("avgOvernightHrv"),
+        "training_readiness": readiness.get("score"),
+        "training_status": _status_label(
+            status.get("trainingStatusFeedbackPhrase") or readiness.get("level")
+        ),
+        "vo2_max": vo2.get("vo2MaxPreciseValue") or vo2.get("vo2MaxValue"),
+        "recovery_time_hours": (
+            float(recovery_minutes) / 60 if recovery_minutes is not None else None
+        ),
+        "moderate_intensity_min": data.get("moderateIntensityMinutes"),
+        "vigorous_intensity_min": data.get("vigorousIntensityMinutes"),
+        "avg_respiration": data.get("avgWakingRespirationValue"),
+        "avg_spo2": data.get("averageSpo2"),
         "raw_json": db.dumps(data),
     }
     db.upsert_daily_stats(conn, row)
@@ -192,8 +248,8 @@ def sync(days: int = 7, reuse_today: bool = False):
 
             day = start
             while day <= today:
-                _sync_sleep(client, conn, day)
-                _sync_daily_stats(client, conn, day)
+                sleep_data = _sync_sleep(client, conn, day)
+                _sync_daily_stats(client, conn, day, sleep_data)
                 _sync_body_composition(client, conn, day)
                 day += timedelta(days=1)
 
