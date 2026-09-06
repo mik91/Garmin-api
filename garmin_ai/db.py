@@ -96,6 +96,16 @@ CREATE TABLE IF NOT EXISTS adherence_overrides (
     updated_at TEXT NOT NULL,
     FOREIGN KEY (scheduled_workout_id) REFERENCES scheduled_workouts(scheduled_workout_id)
 );
+
+CREATE TABLE IF NOT EXISTS race_predictions (
+    date TEXT PRIMARY KEY,
+    time_5k_s REAL,
+    time_10k_s REAL,
+    time_half_s REAL,
+    time_marathon_s REAL,
+    raw_json TEXT,
+    fetched_at TEXT NOT NULL
+);
 """
 
 
@@ -350,6 +360,27 @@ def clear_adherence_override(conn, scheduled_workout_id: str):
     conn.execute(
         "DELETE FROM adherence_overrides WHERE scheduled_workout_id = ?",
         (scheduled_workout_id,),
+    )
+
+
+def upsert_race_prediction(conn, row: dict):
+    conn.execute(
+        """
+        INSERT INTO race_predictions
+            (date, time_5k_s, time_10k_s, time_half_s, time_marathon_s,
+             raw_json, fetched_at)
+        VALUES
+            (:date, :time_5k_s, :time_10k_s, :time_half_s, :time_marathon_s,
+             :raw_json, :fetched_at)
+        ON CONFLICT(date) DO UPDATE SET
+            time_5k_s=excluded.time_5k_s,
+            time_10k_s=excluded.time_10k_s,
+            time_half_s=excluded.time_half_s,
+            time_marathon_s=excluded.time_marathon_s,
+            raw_json=excluded.raw_json,
+            fetched_at=excluded.fetched_at
+        """,
+        row,
     )
 
 

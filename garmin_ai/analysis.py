@@ -80,6 +80,14 @@ def load_adherence_overrides() -> pd.DataFrame:
         return pd.read_sql_query("SELECT * FROM adherence_overrides", conn)
 
 
+def load_race_predictions() -> pd.DataFrame:
+    with db.get_connection() as conn:
+        df = pd.read_sql_query("SELECT * FROM race_predictions ORDER BY date", conn)
+    if not df.empty:
+        df["date"] = pd.to_datetime(df["date"])
+    return df
+
+
 def save_adherence_override(
     scheduled_workout_id: str,
     status: str,

@@ -7,13 +7,13 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from garmin_ai import analysis, ai_insights, config, insights_engine
+from garmin_ai import analysis, ai_insights, config, insights_engine, race_prediction
 from garmin_ai import calendar as training_calendar
 from garmin_ai import sync as sync_module
 
 # Streamlit can retain the previous module object across a hot reload. Reload it
 # when a newly added analysis helper is missing so the app remains restart-safe.
-if not hasattr(analysis, "load_goals") or not hasattr(analysis, "load_scheduled_workouts"):
+if not hasattr(analysis, "load_goals") or not hasattr(analysis, "load_race_predictions"):
     analysis = importlib.reload(analysis)
 if "sample_size" not in getattr(insights_engine.Insight, "__annotations__", {}):
     insights_engine = importlib.reload(insights_engine)
@@ -793,6 +793,7 @@ def build_current_view_summary(
     group_by: str,
     insight_report: dict | None = None,
     goals: dict | None = None,
+    race_model: dict | None = None,
 ) -> dict:
     summary = {
         "date_range": {"start": start.isoformat(), "end": end.isoformat()},
@@ -802,6 +803,8 @@ def build_current_view_summary(
         summary["insight_engine"] = insight_report
     if goals:
         summary["personal_goals"] = {key: value for key, value in goals.items() if value}
+    if race_model and race_model.get("predictions"):
+        summary["race_prediction_model"] = race_model
 
     if not daily.empty:
         summary["daily_stats"] = {
@@ -938,8 +941,14 @@ activities_df = analysis.ensure_activity_categories(analysis.load_activities())
 body_df = analysis.load_body_composition()
 scheduled_workouts_df = analysis.load_scheduled_workouts()
 adherence_overrides_df = analysis.load_adherence_overrides()
+race_predictions_df = analysis.load_race_predictions()
 sync_state = analysis.load_sync_state()
 goals = analysis.load_goals()
+race_model = race_prediction.build_model(
+    activities_df,
+    race_predictions_df,
+    date.today(),
+)
 
 all_dates = []
 if not daily_stats.empty:
@@ -952,6 +961,8 @@ if not body_df.empty:
     all_dates.extend(body_df["date"].dt.date.tolist())
 if not scheduled_workouts_df.empty:
     all_dates.extend(scheduled_workouts_df["date"].dt.date.tolist())
+if not race_predictions_df.empty:
+    all_dates.extend(race_predictions_df["date"].dt.date.tolist())
 
 min_date = min(all_dates) if all_dates else date.today()
 max_date = max(all_dates) if all_dates else date.today()
@@ -1406,6 +1417,84 @@ with tab_trends:
             st.plotly_chart(style_figure(fig, "kg"), use_container_width=True)
 
 with tab_training:
+    st.subheader("Race prediction model")
+    prediction_error = sync_state.get("race_predictions_error")
+    if prediction_error:
+        st.warning(
+            "Garmin race predictions could not be refreshed; cached model values are shown. "
+            f"{prediction_error}"
+        )
+    predictions = race_model.get("predictions", {})
+    if not predictions:
+        st.info("Use Sync now to fetch Garmin's race model and enable calibrated predictions.")
+    else:
+        prediction_cols = st.columns(4)
+        for index, label in enumerate(("5K", "10K", "Half marathon", "Marathon")):
+            prediction = predictions.get(label)
+            if not prediction:
+                prediction_cols[index].metric(label, "-")
+                continue
+            prediction_cols[index].metric(label, prediction["expected"])
+            local_text = (
+                f"Local check {prediction['local_riegel']}"
+                if prediction.get("local_riegel_seconds") else "No verified local race yet"
+            )
+            prediction_cols[index].caption(
+                f"Range {prediction['range'][0]}–{prediction['range'][1]} · "
+                f"{prediction['confidence']} confidence · {local_text}"
+            )
+
+        if len(race_predictions_df) > 1:
+            trend_target = st.selectbox(
+                "Prediction history",
+                list(race_prediction.GARMIN_COLUMNS),
+                index=2,
+                key="race_prediction_trend_target",
+            )
+            trend_column = race_prediction.GARMIN_COLUMNS[trend_target]
+            trend = race_predictions_df.dropna(subset=[trend_column]).tail(180)
+            if not trend.empty:
+                fig = go.Figure(
+                    go.Scatter(
+                        x=trend["date"],
+                        y=trend[trend_column] / 60,
+                        mode="lines",
+                        name=trend_target,
+                        line=dict(color=BLUE, width=2.5),
+                    )
+                )
+                fig.update_yaxes(autorange="reversed")
+                st.plotly_chart(
+                    style_figure(fig, "predicted minutes (lower is faster)"),
+                    use_container_width=True,
+                )
+
+        with st.expander("Prediction evidence and limitations"):
+            st.caption(
+                "Garmin is the primary calibrated prediction. The local model is a transparent "
+                "Riegel cross-check and only accepts activities explicitly named as races or time trials."
+            )
+            efforts = race_model.get("credible_efforts", [])
+            if efforts:
+                evidence = pd.DataFrame(efforts)
+                st.dataframe(
+                    evidence[["date", "activity", "distance", "formatted", "evidence"]],
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "date": "Date",
+                        "activity": "Activity",
+                        "distance": "Effort",
+                        "formatted": "Time",
+                        "evidence": "Classification",
+                    },
+                )
+            else:
+                st.info("No activity explicitly labelled as a race or time trial was found.")
+            for limitation in race_model.get("limitations", []):
+                st.markdown(f"- {limitation}")
+    st.divider()
+
     if activities_filtered.empty:
         st.info("No activities match the current date filters.")
     else:
@@ -1991,6 +2080,7 @@ with tab_ai:
             period,
             insight_report,
             goals,
+            race_model,
         )
         summary_json = json.dumps(summary, indent=2, default=str)
         summary_key = f"{provider}:{model}:{summary_json}"

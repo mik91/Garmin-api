@@ -258,6 +258,35 @@ def _sync_scheduled_workouts(client: Garmin, conn, start: date, end: date):
     db.set_sync_state(conn, "scheduled_workouts_error", "")
 
 
+def _sync_race_predictions(client: Garmin, conn, end: date):
+    """Store Garmin's daily model history so predictions remain auditable over time."""
+    from garmin_ai import race_prediction
+
+    fetched_at = datetime.now().isoformat(timespec="seconds")
+    start = end - timedelta(days=365)
+    payload = _with_retry(
+        client.get_race_predictions,
+        start.isoformat(),
+        end.isoformat(),
+        "daily",
+    )
+    items = payload if isinstance(payload, list) else [payload]
+    stored = 0
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        row = race_prediction.normalize_garmin_prediction(item, fetched_at)
+        if row and any(row[key] is not None for key in (
+            "time_5k_s", "time_10k_s", "time_half_s", "time_marathon_s"
+        )):
+            db.upsert_race_prediction(conn, row)
+            stored += 1
+    if not stored:
+        raise ValueError("Garmin returned no usable race predictions.")
+    db.set_sync_state(conn, "race_predictions_last_synced_at", fetched_at)
+    db.set_sync_state(conn, "race_predictions_error", "")
+
+
 def sync(days: int = 7, reuse_today: bool = False):
     """Pull the last `days` days of data."""
     with _sync_guard():
@@ -286,6 +315,10 @@ def sync(days: int = 7, reuse_today: bool = False):
                 _sync_scheduled_workouts(client, conn, calendar_start, calendar_end)
             except Exception as error:
                 db.set_sync_state(conn, "scheduled_workouts_error", friendly_error(error))
+            try:
+                _sync_race_predictions(client, conn, today)
+            except Exception as error:
+                db.set_sync_state(conn, "race_predictions_error", friendly_error(error))
 
             db.set_last_synced_date(conn, today.isoformat())
             db.set_sync_state(conn, "last_synced_at", datetime.now().isoformat(timespec="seconds"))
