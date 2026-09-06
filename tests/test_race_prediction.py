@@ -70,7 +70,7 @@ class RacePredictionTests(unittest.TestCase):
         )
         self.assertEqual([effort["distance"] for effort in efforts], ["Half marathon"])
 
-    def test_garmin_remains_primary_and_local_model_is_cross_check(self):
+    def test_independent_model_is_primary_and_garmin_is_comparison_only(self):
         activities = pd.DataFrame([{
             "activity_id": 1,
             "start_time": pd.Timestamp("2026-05-23 16:00:00"),
@@ -79,7 +79,15 @@ class RacePredictionTests(unittest.TestCase):
             "duration_s": 1180,
             "distance_m": 5087,
             "raw_json": '{"activityName":"Ottawa 5K Race","fastestSplit_5000":1164.5}',
-        }])
+        }] + [{
+            "activity_id": day + 10,
+            "start_time": pd.Timestamp("2026-08-01") + pd.Timedelta(days=day * 3),
+            "type": "running",
+            "category": "Running",
+            "duration_s": 3000,
+            "distance_m": 10000,
+            "raw_json": '{"activityName":"Training run"}',
+        } for day in range(12)])
         history = pd.DataFrame([{
             "date": pd.Timestamp("2026-09-06"),
             "time_5k_s": 1171,
@@ -91,10 +99,32 @@ class RacePredictionTests(unittest.TestCase):
             activities, history, date(2026, 9, 6)
         )
         half = model["predictions"]["Half marathon"]
-        self.assertEqual(half["expected"], "1:33:08")
-        self.assertEqual(half["official_garmin"], "1:33:08")
-        self.assertEqual(half["local_riegel"], "1:29:17")
-        self.assertEqual(half["confidence"], "high")
+        self.assertNotEqual(half["expected"], "1:33:08")
+        self.assertEqual(half["garmin_comparison"], "1:33:08")
+        self.assertEqual(half["base_equivalent"], "1:29:17")
+
+        changed_history = history.copy()
+        changed_history.loc[0, "time_half_s"] = 7200
+        changed = race_prediction.build_model(activities, changed_history, date(2026, 9, 6))
+        self.assertEqual(
+            half["expected_seconds"],
+            changed["predictions"]["Half marathon"]["expected_seconds"],
+        )
+        self.assertNotEqual(
+            half["garmin_comparison_seconds"],
+            changed["predictions"]["Half marathon"]["garmin_comparison_seconds"],
+        )
+
+    def test_garmin_alone_does_not_create_an_independent_prediction(self):
+        history = pd.DataFrame([{
+            "date": pd.Timestamp("2026-09-06"),
+            "time_5k_s": 1171,
+            "time_10k_s": 2483,
+            "time_half_s": 5588,
+            "time_marathon_s": 12347,
+        }])
+        model = race_prediction.build_model(pd.DataFrame(), history, date(2026, 9, 6))
+        self.assertEqual(model["predictions"], {})
 
     def test_stronger_race_beats_more_recent_slow_race(self):
         efforts = [
