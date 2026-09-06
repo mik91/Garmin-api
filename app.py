@@ -1,17 +1,19 @@
 import importlib
 import json
 from datetime import date, datetime, timedelta
+from html import escape
 
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
 from garmin_ai import analysis, ai_insights, config, insights_engine
+from garmin_ai import calendar as training_calendar
 from garmin_ai import sync as sync_module
 
 # Streamlit can retain the previous module object across a hot reload. Reload it
 # when a newly added analysis helper is missing so the app remains restart-safe.
-if not hasattr(analysis, "load_goals"):
+if not hasattr(analysis, "load_goals") or not hasattr(analysis, "load_scheduled_workouts"):
     analysis = importlib.reload(analysis)
 if "sample_size" not in getattr(insights_engine.Insight, "__annotations__", {}):
     insights_engine = importlib.reload(insights_engine)
@@ -210,6 +212,30 @@ st.markdown(
     }
     [data-testid="stExpander"] {border: 1px solid var(--border); border-radius: 12px; background: rgba(17, 28, 46, 0.62);}
     [data-testid="stChatMessage"] {border: 1px solid var(--border); border-radius: 14px; background: rgba(17, 28, 46, 0.7); padding: 0.4rem 0.65rem;}
+    .calendar-grid {
+        display: grid;
+        grid-template-columns: repeat(7, minmax(150px, 1fr));
+        gap: 0.65rem;
+        margin: 1rem 0 1.5rem;
+        overflow-x: auto;
+        padding-bottom: 0.35rem;
+    }
+    .calendar-day {
+        min-height: 185px;
+        padding: 0.8rem;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: rgba(17, 28, 46, 0.72);
+    }
+    .calendar-day.today {border-color: var(--accent);}
+    .calendar-date {font-size: 0.78rem; font-weight: 750; color: var(--muted); margin-bottom: 0.7rem; text-transform: uppercase;}
+    .calendar-item {margin-top: 0.5rem; padding: 0.55rem 0.6rem; border-left: 3px solid var(--muted); border-radius: 7px; background: rgba(9, 17, 31, 0.78); font-size: 0.82rem; line-height: 1.35;}
+    .calendar-item.completed {border-left-color: var(--success, #34d399);}
+    .calendar-item.planned {border-left-color: var(--accent);}
+    .calendar-item.missed {border-left-color: #fb7185;}
+    .calendar-item.skipped {border-left-color: #fbbf24;}
+    .calendar-item.actual {border-left-color: #a78bfa;}
+    .calendar-item__meta {color: var(--muted); font-size: 0.72rem; margin-top: 0.2rem;}
     hr {border-color: var(--border);}
 
     @media (max-width: 900px) {
@@ -910,6 +936,8 @@ daily_stats = analysis.load_daily_stats()
 sleep_df = analysis.load_sleep()
 activities_df = analysis.ensure_activity_categories(analysis.load_activities())
 body_df = analysis.load_body_composition()
+scheduled_workouts_df = analysis.load_scheduled_workouts()
+adherence_overrides_df = analysis.load_adherence_overrides()
 sync_state = analysis.load_sync_state()
 goals = analysis.load_goals()
 
@@ -922,6 +950,8 @@ if not activities_df.empty:
     all_dates.extend(activities_df["start_time"].dt.date.tolist())
 if not body_df.empty:
     all_dates.extend(body_df["date"].dt.date.tolist())
+if not scheduled_workouts_df.empty:
+    all_dates.extend(scheduled_workouts_df["date"].dt.date.tolist())
 
 min_date = min(all_dates) if all_dates else date.today()
 max_date = max(all_dates) if all_dates else date.today()
@@ -1072,8 +1102,8 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-tab_overview, tab_trends, tab_training, tab_activities, tab_ai = st.tabs(
-    ["Overview", "Trends", "Training", "Activities", "AI Insights"]
+tab_overview, tab_trends, tab_training, tab_calendar, tab_activities, tab_ai = st.tabs(
+    ["Overview", "Trends", "Training", "Calendar", "Activities", "AI Insights"]
 )
 
 with tab_overview:
@@ -1547,6 +1577,183 @@ with tab_training:
                         st.success(message)
                     else:
                         st.info(message)
+
+with tab_calendar:
+    calendar_error = sync_state.get("scheduled_workouts_error")
+    calendar_synced_at = sync_state.get("scheduled_workouts_last_synced_at")
+    if calendar_error:
+        st.warning(
+            "Garmin calendar refresh failed, so cached workouts are shown where available. "
+            f"{calendar_error}"
+        )
+    elif calendar_synced_at:
+        try:
+            parsed_calendar_sync = datetime.fromisoformat(calendar_synced_at)
+            st.caption(f"Garmin calendar last refreshed {parsed_calendar_sync:%b %d at %I:%M %p}.")
+        except ValueError:
+            st.caption(f"Garmin calendar last refreshed {calendar_synced_at}.")
+    else:
+        st.info("Use Sync now to pull scheduled workouts from your Garmin calendar.")
+
+    calendar_adherence = training_calendar.build_adherence(
+        scheduled_workouts_df,
+        activities_df,
+        adherence_overrides_df,
+    )
+    anchor = st.date_input("Week containing", value=date.today(), key="calendar_week_anchor")
+    week_start = anchor - timedelta(days=anchor.weekday())
+    week_end = week_start + timedelta(days=6)
+    week_adherence = calendar_adherence[
+        calendar_adherence["date"].dt.date.between(week_start, week_end)
+    ] if not calendar_adherence.empty else calendar_adherence
+    week_activities = activities_df[
+        activities_df["start_time"].dt.date.between(week_start, week_end)
+    ].copy() if not activities_df.empty else activities_df.copy()
+
+    completed_count = int((week_adherence["status"] == "completed").sum()) if not week_adherence.empty else 0
+    missed_count = int((week_adherence["status"] == "missed").sum()) if not week_adherence.empty else 0
+    planned_count = int((week_adherence["status"] == "planned").sum()) if not week_adherence.empty else 0
+    skipped_count = int((week_adherence["status"] == "skipped").sum()) if not week_adherence.empty else 0
+    eligible_count = completed_count + missed_count
+    adherence_pct = completed_count / eligible_count * 100 if eligible_count else None
+    calendar_metrics = st.columns(5)
+    calendar_metrics[0].metric("Scheduled", len(week_adherence))
+    calendar_metrics[1].metric("Completed", completed_count)
+    calendar_metrics[2].metric("Adherence", fmt_number(adherence_pct, "%", 0))
+    calendar_metrics[3].metric("Upcoming", planned_count)
+    calendar_metrics[4].metric("Missed / skipped", f"{missed_count} / {skipped_count}")
+
+    matched_ids = {
+        str(int(value))
+        for value in week_adherence.get("matched_activity_id", pd.Series(dtype=float)).dropna()
+    }
+    cells = []
+    for offset in range(7):
+        day = week_start + timedelta(days=offset)
+        today_class = " today" if day == date.today() else ""
+        items = []
+        day_plans = (
+            week_adherence[week_adherence["date"].dt.date == day]
+            if not week_adherence.empty
+            else week_adherence
+        )
+        for _, planned in day_plans.iterrows():
+            status = planned["status"] if planned["status"] in {"completed", "planned", "missed", "skipped"} else "planned"
+            details = [status.title()]
+            if planned.get("confidence"):
+                details.append(f"{planned['confidence']} confidence")
+            if bool(planned.get("manual_override")):
+                details.append("manual")
+            if pd.notna(planned.get("duration_s")):
+                details.append(fmt_duration(planned["duration_s"]))
+            if pd.notna(planned.get("distance_m")):
+                details.append(f"{planned['distance_m'] / 1000:.1f} km")
+            matched_name = planned.get("matched_activity_name")
+            matched_text = f"<div class='calendar-item__meta'>Matched: {escape(str(matched_name))}</div>" if matched_name else ""
+            items.append(
+                f"<div class='calendar-item {status}'><strong>{escape(str(planned['name']))}</strong>"
+                f"<div class='calendar-item__meta'>{escape(' · '.join(details))}</div>{matched_text}</div>"
+            )
+
+        if not week_activities.empty:
+            day_actuals = week_activities[week_activities["start_time"].dt.date == day]
+            for _, actual in day_actuals.iterrows():
+                if str(int(actual["activity_id"])) in matched_ids:
+                    continue
+                actual_name = raw_value(actual, "activityName", activity_type_label(actual.get("type")))
+                items.append(
+                    f"<div class='calendar-item actual'><strong>{escape(str(actual_name))}</strong>"
+                    "<div class='calendar-item__meta'>Completed · not linked to a plan</div></div>"
+                )
+        if not items:
+            items.append("<div class='calendar-item__meta'>Rest / no activity</div>")
+        cells.append(
+            f"<div class='calendar-day{today_class}'><div class='calendar-date'>"
+            f"{day:%a · %b %d}</div>{''.join(items)}</div>"
+        )
+    st.markdown(f"<div class='calendar-grid'>{''.join(cells)}</div>", unsafe_allow_html=True)
+
+    if not calendar_adherence.empty:
+        with st.expander("Correct an adherence match"):
+            st.caption(
+                "Corrections stay in this local database and do not modify Garmin Connect."
+            )
+            schedule_options = calendar_adherence["scheduled_workout_id"].astype(str).tolist()
+            selected_schedule_id = st.selectbox(
+                "Scheduled workout",
+                schedule_options,
+                format_func=lambda value: next(
+                    (
+                        f"{row['date']:%b %d} — {row['name']}"
+                        for _, row in calendar_adherence.iterrows()
+                        if str(row["scheduled_workout_id"]) == value
+                    ),
+                    value,
+                ),
+                key="adherence_schedule_id",
+            )
+            selected_status = st.selectbox(
+                "Status",
+                ["Automatic", "Completed", "Missed", "Skipped", "Planned"],
+                key="adherence_status",
+            )
+            activity_options = [None] + activities_df.sort_values("start_time", ascending=False)[
+                "activity_id"
+            ].tolist()
+
+            def format_activity_option(value):
+                if value is None:
+                    return "No specific activity"
+                row = activities_df[activities_df["activity_id"] == value].iloc[0]
+                name = raw_value(row, "activityName", activity_type_label(row["type"]))
+                return f"{row['start_time']:%b %d} — {name}"
+
+            selected_activity_id = st.selectbox(
+                "Completed activity",
+                activity_options,
+                format_func=format_activity_option,
+                disabled=selected_status != "Completed",
+                key="adherence_activity_id",
+            )
+            correction_cols = st.columns([1, 1, 4])
+            if correction_cols[0].button("Apply", use_container_width=True):
+                if selected_status == "Automatic":
+                    analysis.clear_adherence_override(selected_schedule_id)
+                else:
+                    analysis.save_adherence_override(
+                        selected_schedule_id,
+                        selected_status.lower(),
+                        int(selected_activity_id) if selected_activity_id is not None else None,
+                    )
+                st.rerun()
+            if correction_cols[1].button("Clear", use_container_width=True):
+                analysis.clear_adherence_override(selected_schedule_id)
+                st.rerun()
+
+    if not week_adherence.empty:
+        with st.expander("Weekly adherence details"):
+            details = week_adherence.copy()
+            details["planned_distance_km"] = details["distance_m"] / 1000
+            details["planned_duration"] = details["duration_s"].apply(fmt_duration)
+            st.dataframe(
+                details[[
+                    "date", "name", "sport", "planned_duration", "planned_distance_km",
+                    "status", "confidence", "matched_activity_name", "manual_override",
+                ]],
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "date": st.column_config.DateColumn("Date"),
+                    "name": "Workout",
+                    "sport": "Sport",
+                    "planned_duration": "Planned time",
+                    "planned_distance_km": st.column_config.NumberColumn("Planned km", format="%.1f"),
+                    "status": "Status",
+                    "confidence": "Match confidence",
+                    "matched_activity_name": "Matched activity",
+                    "manual_override": "Manual",
+                },
+            )
 
 with tab_activities:
     if activities_filtered.empty:

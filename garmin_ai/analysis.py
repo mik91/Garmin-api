@@ -67,6 +67,33 @@ def load_goals() -> dict:
         return db.get_goals(conn)
 
 
+def load_scheduled_workouts() -> pd.DataFrame:
+    with db.get_connection() as conn:
+        df = pd.read_sql_query("SELECT * FROM scheduled_workouts ORDER BY date", conn)
+    if not df.empty:
+        df["date"] = pd.to_datetime(df["date"])
+    return df
+
+
+def load_adherence_overrides() -> pd.DataFrame:
+    with db.get_connection() as conn:
+        return pd.read_sql_query("SELECT * FROM adherence_overrides", conn)
+
+
+def save_adherence_override(
+    scheduled_workout_id: str,
+    status: str,
+    matched_activity_id: int | None = None,
+) -> None:
+    with db.get_connection() as conn:
+        db.set_adherence_override(conn, scheduled_workout_id, status, matched_activity_id)
+
+
+def clear_adherence_override(scheduled_workout_id: str) -> None:
+    with db.get_connection() as conn:
+        db.clear_adherence_override(conn, scheduled_workout_id)
+
+
 def save_goals(goals: dict) -> None:
     with db.get_connection() as conn:
         db.set_goals(conn, goals)

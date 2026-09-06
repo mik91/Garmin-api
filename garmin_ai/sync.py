@@ -6,6 +6,7 @@ from datetime import date, datetime, timedelta
 
 from garminconnect import Garmin
 
+from garmin_ai import calendar as training_calendar
 from garmin_ai import config, db
 
 
@@ -231,6 +232,32 @@ def _sync_body_composition(client: Garmin, conn, day: date):
         db.upsert_body_composition(conn, row)
 
 
+def _calendar_months(start: date, end: date):
+    current = start.replace(day=1)
+    while current <= end:
+        yield current.year, current.month
+        current = (
+            current.replace(year=current.year + 1, month=1)
+            if current.month == 12
+            else current.replace(month=current.month + 1)
+        )
+
+
+def _sync_scheduled_workouts(client: Garmin, conn, start: date, end: date):
+    """Cache a complete calendar window without erasing it after partial failures."""
+    seen_at = datetime.now().isoformat(timespec="seconds")
+    rows = []
+    for year, month in _calendar_months(start, end):
+        payload = _with_retry(client.get_scheduled_workouts, year, month)
+        for item in training_calendar.scheduled_items(payload):
+            row = training_calendar.normalize_scheduled_workout(item, seen_at)
+            if start.isoformat() <= row["date"] <= end.isoformat():
+                rows.append(row)
+    db.replace_scheduled_workouts(conn, start.isoformat(), end.isoformat(), rows)
+    db.set_sync_state(conn, "scheduled_workouts_last_synced_at", seen_at)
+    db.set_sync_state(conn, "scheduled_workouts_error", "")
+
+
 def sync(days: int = 7, reuse_today: bool = False):
     """Pull the last `days` days of data."""
     with _sync_guard():
@@ -252,6 +279,13 @@ def sync(days: int = 7, reuse_today: bool = False):
                 _sync_daily_stats(client, conn, day, sleep_data)
                 _sync_body_composition(client, conn, day)
                 day += timedelta(days=1)
+
+            calendar_start = min(start, today - timedelta(days=14))
+            calendar_end = today + timedelta(days=42)
+            try:
+                _sync_scheduled_workouts(client, conn, calendar_start, calendar_end)
+            except Exception as error:
+                db.set_sync_state(conn, "scheduled_workouts_error", friendly_error(error))
 
             db.set_last_synced_date(conn, today.isoformat())
             db.set_sync_state(conn, "last_synced_at", datetime.now().isoformat(timespec="seconds"))

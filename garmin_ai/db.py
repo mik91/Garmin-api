@@ -75,6 +75,27 @@ CREATE TABLE IF NOT EXISTS goals (
     key TEXT PRIMARY KEY,
     value TEXT
 );
+
+CREATE TABLE IF NOT EXISTS scheduled_workouts (
+    scheduled_workout_id TEXT PRIMARY KEY,
+    workout_id TEXT,
+    date TEXT NOT NULL,
+    name TEXT,
+    sport TEXT,
+    duration_s REAL,
+    distance_m REAL,
+    associated_activity_id INTEGER,
+    raw_json TEXT,
+    last_seen_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS adherence_overrides (
+    scheduled_workout_id TEXT PRIMARY KEY,
+    status TEXT NOT NULL,
+    matched_activity_id INTEGER,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (scheduled_workout_id) REFERENCES scheduled_workouts(scheduled_workout_id)
+);
 """
 
 
@@ -273,6 +294,62 @@ def set_goals(conn, goals: dict):
         ON CONFLICT(key) DO UPDATE SET value=excluded.value
         """,
         [(key, str(value)) for key, value in goals.items()],
+    )
+
+
+def replace_scheduled_workouts(conn, start_date: str, end_date: str, rows: list[dict]):
+    """Replace the cached Garmin calendar entries for a completely fetched window."""
+    conn.execute(
+        "DELETE FROM scheduled_workouts WHERE date BETWEEN ? AND ?",
+        (start_date, end_date),
+    )
+    conn.executemany(
+        """
+        INSERT INTO scheduled_workouts
+            (scheduled_workout_id, workout_id, date, name, sport, duration_s,
+             distance_m, associated_activity_id, raw_json, last_seen_at)
+        VALUES
+            (:scheduled_workout_id, :workout_id, :date, :name, :sport, :duration_s,
+             :distance_m, :associated_activity_id, :raw_json, :last_seen_at)
+        ON CONFLICT(scheduled_workout_id) DO UPDATE SET
+            workout_id=excluded.workout_id,
+            date=excluded.date,
+            name=excluded.name,
+            sport=excluded.sport,
+            duration_s=excluded.duration_s,
+            distance_m=excluded.distance_m,
+            associated_activity_id=excluded.associated_activity_id,
+            raw_json=excluded.raw_json,
+            last_seen_at=excluded.last_seen_at
+        """,
+        rows,
+    )
+
+
+def set_adherence_override(
+    conn,
+    scheduled_workout_id: str,
+    status: str,
+    matched_activity_id: int | None = None,
+):
+    conn.execute(
+        """
+        INSERT INTO adherence_overrides
+            (scheduled_workout_id, status, matched_activity_id, updated_at)
+        VALUES (?, ?, ?, datetime('now'))
+        ON CONFLICT(scheduled_workout_id) DO UPDATE SET
+            status=excluded.status,
+            matched_activity_id=excluded.matched_activity_id,
+            updated_at=excluded.updated_at
+        """,
+        (scheduled_workout_id, status, matched_activity_id),
+    )
+
+
+def clear_adherence_override(conn, scheduled_workout_id: str):
+    conn.execute(
+        "DELETE FROM adherence_overrides WHERE scheduled_workout_id = ?",
+        (scheduled_workout_id,),
     )
 
 
