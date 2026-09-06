@@ -1426,7 +1426,7 @@ with tab_training:
         )
     predictions = race_model.get("predictions", {})
     if not predictions:
-        st.info("Use Sync now to fetch Garmin's race model and enable calibrated predictions.")
+        st.info("Label a completed activity as a race or time trial to enable independent predictions.")
     else:
         prediction_cols = st.columns(4)
         for index, label in enumerate(("5K", "10K", "Half marathon", "Marathon")):
@@ -1435,13 +1435,13 @@ with tab_training:
                 prediction_cols[index].metric(label, "-")
                 continue
             prediction_cols[index].metric(label, prediction["expected"])
-            local_text = (
-                f"Local check {prediction['local_riegel']}"
-                if prediction.get("local_riegel_seconds") else "No verified local race yet"
+            garmin_text = (
+                f"Garmin comparison {prediction['garmin_comparison']}"
+                if prediction.get("garmin_comparison_seconds") else "No Garmin comparison"
             )
             prediction_cols[index].caption(
                 f"Range {prediction['range'][0]}–{prediction['range'][1]} · "
-                f"{prediction['confidence']} confidence · {local_text}"
+                f"{prediction['confidence']} confidence · {garmin_text}"
             )
 
         if len(race_predictions_df) > 1:
@@ -1471,8 +1471,31 @@ with tab_training:
 
         with st.expander("Prediction evidence and limitations"):
             st.caption(
-                "Garmin is the primary calibrated prediction. The local model is a transparent "
-                "Riegel cross-check and only accepts activities explicitly named as races or time trials."
+                "This independent model starts with verified race/time-trial equivalence, then applies "
+                "bounded recency and training-support adjustments. Garmin is comparison-only and never "
+                "enters the expected time, range, or confidence calculation."
+            )
+            profile = race_model.get("training_profile", {})
+            if profile:
+                st.write(
+                    f"42-day inputs: **{profile.get('weekly_km', 0):.1f} km/week**, "
+                    f"**{profile.get('runs_per_week', 0):.1f} runs/week**, longest run "
+                    f"**{profile.get('longest_run_km', 0):.1f} km**."
+                )
+            calculation_rows = []
+            for label, prediction in predictions.items():
+                calculation_rows.append({
+                    "Distance": label,
+                    "Race equivalent": prediction["base_equivalent"],
+                    "Recency adjustment": f"+{prediction['recency_adjustment_pct']:.1f}%",
+                    "Endurance adjustment": f"+{prediction['endurance_adjustment_pct']:.1f}%",
+                    "Independent estimate": prediction["expected"],
+                    "Garmin comparison": prediction.get("garmin_comparison", "-"),
+                })
+            st.dataframe(
+                pd.DataFrame(calculation_rows),
+                use_container_width=True,
+                hide_index=True,
             )
             efforts = race_model.get("credible_efforts", [])
             if efforts:
