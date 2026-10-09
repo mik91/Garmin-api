@@ -79,11 +79,11 @@ def _get(d: dict, *path, default=None):
     return cur if cur is not None else default
 
 
-def login() -> Garmin:
+def login(prompt_mfa=None) -> Garmin:
     client = Garmin(
         config.GARMIN_EMAIL,
         config.GARMIN_PASSWORD,
-        prompt_mfa=lambda: input("Enter Garmin MFA code: "),
+        prompt_mfa=prompt_mfa or (lambda: input("Enter Garmin MFA code: ")),
     )
     client.login(config.GARMIN_TOKENSTORE)
     return client
@@ -287,7 +287,7 @@ def _sync_race_predictions(client: Garmin, conn, end: date):
     db.set_sync_state(conn, "race_predictions_error", "")
 
 
-def sync(days: int = 7, reuse_today: bool = False):
+def sync(days: int = 7, reuse_today: bool = False, prompt_mfa=None):
     """Pull the last `days` days of data."""
     with _sync_guard():
         today = date.today()
@@ -298,7 +298,7 @@ def sync(days: int = 7, reuse_today: bool = False):
                 if _today_sync_covers(conn, days, today):
                     return start, today
 
-        client = login()
+        client = login(prompt_mfa=prompt_mfa) if prompt_mfa is not None else login()
         with db.get_connection() as conn:
             _sync_activities(client, conn, start, today)
 

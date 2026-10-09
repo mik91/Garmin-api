@@ -21,6 +21,8 @@ def _env_bool(name: str, default: bool = False) -> bool:
 
 GARMIN_AUTO_SYNC_ON_STARTUP = _env_bool("GARMIN_AUTO_SYNC_ON_STARTUP")
 GARMIN_AUTO_SYNC_DAYS = int(os.environ.get("GARMIN_AUTO_SYNC_DAYS", "7"))
+# Minutes between background syncs while the web server runs; 0 turns it off.
+GARMIN_AUTO_SYNC_INTERVAL_MIN = int(os.environ.get("GARMIN_AUTO_SYNC_INTERVAL_MIN", "60"))
 
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-opus-4-8")

@@ -1,6 +1,23 @@
+# Main interface
+
+Run `.\start.ps1` from this folder, then open http://127.0.0.1:8502.
+The launcher now starts the main web interface: Overview, Discoveries, Trends,
+Training, Calendar, Activities, and AI insights. Use Sync Garmin to refresh data.
+No AI requests are sent until you submit a question or request a summary.
+
+For the legacy Streamlit fallback, run `.\start.ps1 -Legacy` and open
+http://127.0.0.1:8501. Stop the running server with Ctrl+C before restarting it.
+The new server is local-only and must not be exposed directly to the internet.
+
+Goal slider settings are saved in this browser. AI coaching context and calendar
+completion overrides are saved in the existing SQLite database. Use the date
+controls for history views; Calendar uses its own month, and Discoveries goal
+questions use recent history through today. Core workflows are available in the
+new interface; Streamlit remains available for comparison during migration.
+
 # Garmin Insights Launch Instructions
 
-This project is a Streamlit dashboard for Garmin Connect data. It can sync your Garmin data into a local SQLite database, then show trends, activity history, and optional AI insights.
+This project uses a dedicated local web interface for Garmin Connect data. The Python analytics and database also remain usable from the legacy Streamlit dashboard. It can sync your Garmin data into a local SQLite database, then show trends, activity history, and optional AI insights.
 
 ## 1. Open the Project Folder
 
@@ -65,7 +82,7 @@ GARMIN_TOKENSTORE=.garmin_tokens
 GARMIN_DB_PATH=data/garmin.db
 ```
 
-Optional automatic sync when the app starts:
+Optional automatic sync for the legacy Streamlit app (the main interface uses the Sync Garmin button):
 
 ```env
 GARMIN_AUTO_SYNC_ON_STARTUP=true
@@ -84,7 +101,7 @@ python cli.py sync --days 30
 
 For Garmin MFA, enter the code when prompted.
 
-You can also sync from the app sidebar after launching the dashboard.
+You can also use Sync Garmin in the main interface. If Garmin requests MFA, use the command-line sync once to enter the code, then retry in the app.
 
 ## 6. Launch the Dashboard
 
@@ -94,13 +111,13 @@ Fast path:
 .\start.ps1
 ```
 
-Or launch Streamlit directly:
+For the legacy fallback, launch Streamlit directly:
 
 ```powershell
 streamlit run app.py
 ```
 
-Streamlit will print a local URL, usually:
+The main interface uses http://127.0.0.1:8502. The legacy Streamlit fallback prints a URL such as:
 
 ```text
 http://localhost:8501

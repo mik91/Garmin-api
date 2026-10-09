@@ -37,6 +37,10 @@ SYSTEM_PROMPT = (
 )
 
 
+MAX_OUTPUT_TOKENS = 8192
+TRUNCATED_NOTE = "\n\n*(This answer was cut off at the length limit. Ask me to continue.)*"
+
+
 class AIProviderError(ValueError):
     pass
 
@@ -79,12 +83,13 @@ def _anthropic_message(content: str) -> str:
     client = _anthropic_client()
     response = client.messages.create(
         model=config.ANTHROPIC_MODEL,
-        max_tokens=1024,
+        max_tokens=MAX_OUTPUT_TOKENS,
         thinking={"type": "adaptive"},
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": content}],
     )
-    return next((b.text for b in response.content if b.type == "text"), "")
+    text = next((b.text for b in response.content if b.type == "text"), "")
+    return text + TRUNCATED_NOTE if text and response.stop_reason == "max_tokens" else text
 
 
 def _openai_message(content: str) -> str:
@@ -93,11 +98,11 @@ def _openai_message(content: str) -> str:
         model=config.OPENAI_MODEL,
         instructions=SYSTEM_PROMPT,
         input=content,
-        max_output_tokens=1024,
+        max_output_tokens=MAX_OUTPUT_TOKENS,
     )
-    if getattr(response, "output_text", None):
-        return response.output_text
-    return ""
+    text = getattr(response, "output_text", None) or ""
+    truncated = getattr(response, "status", None) == "incomplete"
+    return text + TRUNCATED_NOTE if text and truncated else text
 
 
 def _message(content: str) -> str:

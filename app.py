@@ -7,7 +7,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from garmin_ai import analysis, ai_insights, config, insights_engine, race_prediction
+from garmin_ai import analysis, ai_insights, config, insights_engine, race_prediction, discoveries_ui
 from garmin_ai import calendar as training_calendar
 from garmin_ai import sync as sync_module
 
@@ -1113,9 +1113,12 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-tab_overview, tab_trends, tab_training, tab_calendar, tab_activities, tab_ai = st.tabs(
-    ["Overview", "Trends", "Training", "Calendar", "Activities", "AI Insights"]
+tab_overview, tab_discoveries, tab_trends, tab_training, tab_calendar, tab_activities, tab_ai = st.tabs(
+    ["Overview", "Discoveries", "Trends", "Training", "Calendar", "Activities", "AI Insights"]
 )
+
+with tab_discoveries:
+    discoveries_ui.render(activities_df, sleep_df, daily_stats, start_date, end_date)
 
 with tab_overview:
     if daily_stats.empty and activities_df.empty and sleep_df.empty:
