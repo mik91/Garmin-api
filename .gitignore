@@ -1,8 +1,15 @@
+# Secrets and personal data
 .env
 .garmin_tokens/
 data/
+
+# Python
 __pycache__/
 *.pyc
+.pytest_cache/
 .venv/
 venv/
-.claude/settings.local.json
+
+# Local tooling
+.claude/
+.agents/

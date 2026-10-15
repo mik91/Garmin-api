@@ -26,7 +26,7 @@ def _best_effort(runs, key):
     for _, row in runs.iterrows():
         seconds = _number(_raw(row).get(key))
         if seconds and (best is None or seconds < best["seconds"]):
-            best = {"seconds": seconds, "activity": _raw(row).get("activityName") or row["type"],
+            best = {"seconds": seconds, "activity_id": int(row["activity_id"]), "activity": _raw(row).get("activityName") or row["type"],
                     "date": row["start_time"].date().isoformat()}
     return best
 
@@ -49,7 +49,7 @@ def running_focus(activities, start, end):
         "avg_run_distance_km": _number(runs["distance_km"].mean(skipna=True)),
         "weekly_volume_km": _number(total_km / days * 7),
         "avg_pace_min_km": _number(moving.sum(skipna=True) / 60 / total_km) if total_km else None,
-        "longest_run": {"activity": _raw(longest).get("activityName") or longest["type"],
+        "longest_run": {"activity_id": int(longest["activity_id"]), "activity": _raw(longest).get("activityName") or longest["type"],
                         "date": longest["start_time"].date().isoformat(),
                         "distance_km": _number(longest["distance_km"])},
         "best_5k": _best_effort(runs, "fastestSplit_5000"),
