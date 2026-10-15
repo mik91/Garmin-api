@@ -1,7 +1,7 @@
 'use strict';
 const $ = id => document.getElementById(id);
 let data, view = 'efficiency', selected = null, requestId = 0, controller, syncing = false, plotVersion = 0;
-const green = '#5eead4', blue = '#7aa7ff', muted = '#8b97a8';
+const green = '#9fd356', blue = '#5aa9e6', muted = '#8b97a8';
 const valid = x => typeof x === 'number' && Number.isFinite(x);
 const median = values => {const a = values.filter(valid).sort((a,b)=>a-b); return a.length ? (a[Math.floor((a.length-1)/2)] + a[Math.floor(a.length/2)])/2 : null;};
 const fmt = (x, digits=1) => valid(x) ? x.toFixed(digits) : '—';
@@ -13,7 +13,7 @@ const keyDate = r => r.date.slice(0,10);
 const config = {responsive:true,scrollZoom:true,displaylogo:false,displayModeBar:false};
 function layout(y, height) {
   return {height,margin:{l:65,r:28,t:20,b:40},paper_bgcolor:'transparent',plot_bgcolor:'transparent',font:{family:'Segoe UI, Arial',size:12,color:muted},showlegend:false,hovermode:'closest',dragmode:'zoom',
-    xaxis:{gridcolor:'#1f2937',zeroline:false,tickfont:{size:12}},yaxis:{title:{text:y,font:{size:12}},gridcolor:'#1f2937',zeroline:false},hoverlabel:{bgcolor:'#1b2433',font:{color:'#e6ebf2'}}};
+    xaxis:{gridcolor:'#2c313a',zeroline:false,tickfont:{size:12}},yaxis:{title:{text:y,font:{size:12}},gridcolor:'#2c313a',zeroline:false},hoverlabel:{bgcolor:'#1b2433',font:{color:'#e6ebf2'}}};
 }
 async function load(all=false) {
   const id=++requestId;
@@ -32,7 +32,7 @@ async function load(all=false) {
   }catch(error){if(error.name!=='AbortError' && id===requestId){$('status').classList.add('error');$('status').textContent=error.message;const globalStatus=document.getElementById('dashboard-status');if(globalStatus)globalStatus.textContent=error.message;}}
   finally{if(id===requestId)document.body.classList.remove('loading');}
 }
-function trace(list,x,y,color){return {type:'scatter',mode:'markers',x:list.map(x),y:list.map(y),customdata:list.map(r=>r._key||keyDate(r)),text:list.map(r=>r.n?`${aggMode==='week'?'Week of':'Month of'} ${dateLabel(r.date)} · ${r.n} run${r.n>1?'s':''}`:dateLabel(r.date)),marker:{size:9,color,line:{width:1,color:'#0b0f14'},opacity:.9},hovertemplate:'%{text}<br>%{y:.2f}<extra></extra>'};}
+function trace(list,x,y,color){return {type:'scatter',mode:'markers',x:list.map(x),y:list.map(y),customdata:list.map(r=>r._key||keyDate(r)),text:list.map(r=>r.n?`${aggMode==='week'?'Week of':'Month of'} ${dateLabel(r.date)} · ${r.n} run${r.n>1?'s':''}`:dateLabel(r.date)),marker:{size:9,color,line:{width:1,color:'#1a1d22'},opacity:.9},hovertemplate:'%{text}<br>%{y:.2f}<extra></extra>'};}
 let aggMode='week', plotCtx={list:[],agg:false}, subRun=null;
 function aggregate(list){
   if(aggMode==='run'||view!=='efficiency')return list;
