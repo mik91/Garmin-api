@@ -121,7 +121,7 @@ def start_sync(days):
     def run():
         from garmin_ai import sync
         def needs_mfa():
-            raise ValueError("Garmin needs an MFA code. Run python cli.py sync in a terminal to sign in, then retry Sync Garmin.")
+            raise ValueError("Garmin needs you to sign in again. Open Connections and sign in to Garmin, then sync.")
         try:
             sync.sync(days=days, prompt_mfa=needs_mfa)
             message = "Sync complete. History refreshed."
@@ -140,14 +140,19 @@ def begin_sync(body):
     return start_sync(days)
 
 
-def auto_sync_loop(interval_min, days, check_seconds=60):
-    """Sync in the background whenever the last attempt is older than interval_min."""
+def auto_sync_loop(check_seconds=60):
+    """Sync in the background whenever the last attempt is older than the configured interval.
+
+    Settings are re-read on every check so changes from the Connections page apply live."""
     import time
     from datetime import datetime
     from garmin_ai import db
     last_attempt = 0.0
     while True:
+        interval_min, days = config.GARMIN_AUTO_SYNC_INTERVAL_MIN, config.GARMIN_AUTO_SYNC_DAYS
         try:
+            if interval_min <= 0:
+                raise LookupError("auto-sync is off")
             with db.get_connection() as conn:
                 last = db.get_sync_state(conn).get("last_synced_at")
             age = (datetime.now() - datetime.fromisoformat(last)).total_seconds() if last else float("inf")
@@ -162,10 +167,10 @@ def auto_sync_loop(interval_min, days, check_seconds=60):
 
 def start_auto_sync():
     """Launch the scheduler thread; returns a description, or None when disabled."""
+    threading.Thread(target=auto_sync_loop, daemon=True).start()
     interval = config.GARMIN_AUTO_SYNC_INTERVAL_MIN
     if interval <= 0:
         return None
-    threading.Thread(target=auto_sync_loop, args=(interval, config.GARMIN_AUTO_SYNC_DAYS), daemon=True).start()
     return f"Auto-sync every {interval} min ({config.GARMIN_AUTO_SYNC_DAYS} days)"
 
 
@@ -206,7 +211,7 @@ def activity_splits(body):
         data = json.loads(stored)
     else:
         def needs_mfa():
-            raise ValueError("Garmin needs an MFA code. Run python cli.py sync in a terminal to sign in, then retry.")
+            raise ValueError("Garmin needs you to sign in again. Open Connections and sign in to Garmin, then retry.")
         try:
             data = sync.login(prompt_mfa=needs_mfa).get_activity_splits(activity_id) or {}
         except ValueError:

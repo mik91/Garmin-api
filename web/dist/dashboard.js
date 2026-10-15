@@ -1,7 +1,7 @@
 'use strict';
 let dashboard=null, dashboardRequest=0, activePage='overview', calendarMonth=new Date(), calendarDay=null, chatMessages=[], chatBusy=false, pendingActivity=null;
-const pages=['overview','discoveries','trends','training','calendar','activities','ai'];
-const titles={overview:'Your training at a glance.',discoveries:'Find your patterns.',trends:'See what is changing.',training:'Build on your training.',calendar:'Your training calendar.',activities:'Every session, in detail.',ai:'Put your history in context.'};
+const pages=['overview','discoveries','trends','training','calendar','activities','ai','connections'];
+const titles={overview:'Your training at a glance.',discoveries:'Find your patterns.',trends:'See what is changing.',training:'Build on your training.',calendar:'Your training calendar.',activities:'Every session, in detail.',ai:'Put your history in context.',connections:'Connect your accounts.'};
 const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const sum=(list,key)=>{const v=list.map(r=>r[key]).filter(valid);return v.length?v.reduce((a,b)=>a+b,0):null;};
 const mean=(list,key)=>{const v=list.map(r=>r[key]).filter(valid);return v.length?v.reduce((a,b)=>a+b,0)/v.length:null;};
@@ -60,7 +60,7 @@ async function refreshDashboard(){
   catch(error){if(request===dashboardRequest)$('dashboard-status').textContent=error.message;}
 }
 function navigate(){activePage=pages.includes(location.hash.slice(1))?location.hash.slice(1):'overview';pages.forEach(page=>$(page+'-page').hidden=page!==activePage);document.querySelectorAll('.main-nav a').forEach(a=>{const current=a.hash==='#'+activePage;a.classList.toggle('active',current);if(current)a.setAttribute('aria-current','page');else a.removeAttribute('aria-current');});$('page-title').textContent=titles[activePage];renderPage();}
-function renderPage(){if(activePage==='discoveries'){if(data)render();return;}if(!dashboard)return;({overview:renderOverview,trends:renderTrends,training:renderTraining,calendar:renderCalendar,activities:renderActivities,ai:renderAI})[activePage]?.();}
+function renderPage(){document.body.dataset.page=activePage;if(activePage==='connections'){loadConnections();return;}if(activePage==='discoveries'){if(data)render();return;}if(!dashboard)return;({overview:renderOverview,trends:renderTrends,training:renderTraining,calendar:renderCalendar,activities:renderActivities,ai:renderAI})[activePage]?.();}
 function renderOverview(){
   const m=dashboard.insights.metrics.current,p=dashboard.insights.metrics.previous,list=acts();
   const delta=(key,unit='',digits=1)=>valid(m[key])&&valid(p[key])?`${m[key]-p[key]>=0?'+':''}${fmt(m[key]-p[key],digits)}${unit} vs previous period`:'No previous comparison';
@@ -283,7 +283,7 @@ const aiPrompts=['What are the most important signals in the insight engine repo
 let aiPreviewKey='';
 function aiPayload(){return {start:$('start').value,end:$('end').value,target:{distance:$('goal-distance').value,finish_time:$('goal-time-label').textContent,weeks:$('goal-weeks').value}};}
 async function loadAiPreview(){const key=JSON.stringify(aiPayload());if(key===aiPreviewKey)return;$('ai-preview').textContent='Loading…';try{const result=await post('/api/ai-preview',aiPayload());aiPreviewKey=key;$('ai-preview').textContent=JSON.stringify(result.summary,null,2);}catch(e){$('ai-preview').textContent=e.message;}}
-function renderAI(){const ai=dashboard.ai;$('ai-provider').textContent=ai.configured?`Using ${ai.provider} · ${ai.model}`:'AI is not configured. Add your provider settings to .env to enable chat.';['chat-send','chat-input','ai-summary'].forEach(id=>$(id).disabled=!ai.configured||chatBusy);
+function renderAI(){const ai=dashboard.ai;$('ai-provider').textContent=ai.configured?`Using ${ai.provider} · ${ai.model}`:'AI is not configured. Open Connections to set up Claude or Codex.';['chat-send','chat-input','ai-summary'].forEach(id=>$(id).disabled=!ai.configured||chatBusy);
   $('ai-focus').innerHTML=dashboard.insights.insights.slice(0,5).map(i=>`<li><strong>${esc(i.category)}</strong>: ${esc(i.detail)}</li>`).join('')||'<li class="muted">No priority signals for this range.</li>';
   $('ai-prompts').innerHTML=aiPrompts.map((t,i)=>`<button class="chip" data-prompt="${i}" ${!ai.configured||chatBusy?'disabled':''}>${esc(t)}</button>`).join('');$('ai-prompts').querySelectorAll('button').forEach(b=>b.onclick=()=>sendChat(aiPrompts[b.dataset.prompt]));
   if($('ai-preview-details').open)loadAiPreview();
@@ -341,6 +341,65 @@ $('activity-sport').onchange=()=>{typeFilter.activities=null;renderActivities();
 const shiftCalendar=n=>{calendarMonth=calendarView==='month'?new Date(calendarMonth.getFullYear(),calendarMonth.getMonth()+n,1):new Date(calendarMonth.getFullYear(),calendarMonth.getMonth(),calendarMonth.getDate()+7*n);renderCalendar();};$('month-prev').onclick=()=>shiftCalendar(-1);$('month-next').onclick=()=>shiftCalendar(1);$('calendar-view').onchange=()=>{calendarView=$('calendar-view').value;renderCalendar();};$('month-today').onclick=()=>{calendarMonth=new Date();calendarDay=localDay(calendarMonth);renderCalendar();};
 $('context-form').oninput=()=>{$('context-form').dataset.dirty='true';};$('context-form').onsubmit=async event=>{event.preventDefault();try{const result=await post('/api/goals',{primary_goal:$('context-primary').value,target_event:$('context-event').value,constraints:$('context-constraints').value});delete $('context-form').dataset.dirty;$('context-result').textContent=result.message;await refreshDashboard();}catch(error){$('context-result').textContent=error.message;}};
 $('chat-form').onsubmit=event=>{event.preventDefault();sendChat($('chat-input').value);};$('ai-summary').onclick=()=>sendChat('Summarize the most important evidence in this selected period, in the context of my goal.');$('ai-clear').onclick=()=>{if(!chatBusy){chatMessages=[];renderMessages();}};
+// Connections page: Garmin sign-in, AI provider (Claude/Codex CLI) and auto-sync settings.
+let connections=null,garminMfa=false,cliLoginTimer=null,connectionsRequest=0,connectionsLoading=false;
+const providerNotes={claude:'Uses your Claude Pro or Max subscription.',codex:'Uses your ChatGPT Plus, Pro or Business plan.'};
+const installHelp={claude:'Install Claude Code from claude.com/claude-code',codex:'Install with npm install -g @openai/codex'};
+function badge(id,text,state){const el=$(id);el.textContent=text;el.dataset.state=state;}
+async function loadConnections(force=false){if(connectionsLoading&&!force)return;connectionsLoading=true;const request=++connectionsRequest;try{const response=await fetch('/api/connections');if(!response.ok)throw new Error('Could not check connections.');const result=await response.json();if(request!==connectionsRequest)return;connections=result;renderConnections();}catch(error){badge('garmin-badge','Unavailable','off');badge('ai-badge','Unavailable','off');$('ai-result').textContent=error.message;}finally{if(request===connectionsRequest)connectionsLoading=false;}}
+function renderConnections(){renderGarmin();renderSyncSettings();renderAiProviders();}
+function renderGarmin(){
+  const g=connections.garmin,body=$('garmin-body');garminMfa=garminMfa||g.awaiting_mfa;
+  if(g.connected&&!garminMfa){
+    badge('garmin-badge','Connected','on');
+    body.innerHTML=`<dl class="conn-facts"><dt>Account</dt><dd>${esc(g.display_name||g.email||'Signed in')}</dd>${g.display_name&&g.email?`<dt>Email</dt><dd>${esc(g.email)}</dd>`:''}<dt>Last sync</dt><dd>${g.last_synced_at?esc(dateLabel(g.last_synced_at)):'Not synced yet'}</dd></dl><div class="conn-actions"><button class="primary" id="garmin-sync">Sync now ↻</button><button class="text-button" id="garmin-logout">Sign out</button></div>`;
+    $('garmin-sync').onclick=()=>{location.hash='overview';$('sync-now').click();};
+    $('garmin-logout').onclick=async()=>{if(!confirm('Sign out of Garmin? Your synced history stays on this computer.'))return;try{connections=await post('/api/connections/garmin-logout',{});$('garmin-result').textContent='Signed out.';renderConnections();}catch(e){$('garmin-result').textContent=e.message;}};
+    return;
+  }
+  if(garminMfa){
+    badge('garmin-badge','Verification needed','pending');
+    body.innerHTML=`<form id="garmin-mfa-form" class="conn-form"><label>Code from Garmin<input id="garmin-code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{4,10}" maxlength="10" required></label><button type="submit" class="primary">Verify</button><button type="button" class="text-button" id="garmin-cancel">Start over</button></form><p class="muted small">Garmin sent a verification code to your email or authenticator app.</p>`;
+    $('garmin-code').focus();
+    $('garmin-cancel').onclick=()=>{garminMfa=false;connections.garmin.awaiting_mfa=false;renderGarmin();};
+    $('garmin-mfa-form').onsubmit=async event=>{event.preventDefault();await garminAction(event.submitter,'/api/connections/garmin-mfa',{code:$('garmin-code').value},'Verifying…');};
+    return;
+  }
+  badge('garmin-badge','Not connected','off');
+  body.innerHTML=`<form id="garmin-login-form" class="conn-form stacked"><label>Email<input id="garmin-email" type="email" autocomplete="username" required value="${esc(g.email)}"></label><label>Password<input id="garmin-password" type="password" autocomplete="current-password" required maxlength="256"></label><button type="submit" class="primary">Sign in to Garmin</button></form><p class="muted small">Your password is sent only to Garmin to get a sign-in token, then discarded.</p>`;
+  $('garmin-login-form').onsubmit=async event=>{event.preventDefault();await garminAction(event.submitter,'/api/connections/garmin-login',{email:$('garmin-email').value,password:$('garmin-password').value},'Signing in…');};
+}
+async function garminAction(button,path,body,busy){
+  button.disabled=true;$('garmin-result').textContent=busy;
+  try{const result=await post(path,body);connections=result;garminMfa=!!result.mfa_required;$('garmin-result').textContent=garminMfa?'':result.garmin.connected?'Connected to Garmin. Sync to pull in your history.':'';renderConnections();if(result.garmin.connected&&!garminMfa)refreshDashboard();}
+  catch(error){$('garmin-result').textContent=error.message;button.disabled=false;}
+}
+function renderSyncSettings(){
+  const g=connections.garmin,select=$('sync-interval');
+  if(![...select.options].some(o=>Number(o.value)===g.auto_sync_interval_min))select.add(new Option(`${g.auto_sync_interval_min} minutes`,g.auto_sync_interval_min));
+  if(!$('sync-settings').dataset.dirty){select.value=String(g.auto_sync_interval_min);$('sync-window').value=g.auto_sync_days;}
+  badge('sync-badge',g.auto_sync_interval_min>0?'On':'Off',g.auto_sync_interval_min>0?'on':'off');
+}
+function renderAiProviders(){
+  const ai=connections.ai,chosen=$('provider-options').dataset.choice||ai.provider||'claude',active=ai.providers[ai.provider];
+  if(!$('ai-settings').dataset.dirty)$('ai-model').value=ai.model;
+  const ready=active?.installed&&active.logged_in;
+  badge('ai-badge',ready?'Connected':active?.installed?'Sign-in needed':'Not set up',ready?'on':active?.installed?'pending':'off');
+  $('provider-options').innerHTML=Object.entries(ai.providers).map(([key,p])=>{
+    const state=!p.installed?`<span class="muted">Not installed · ${esc(installHelp[key])}</span>`:p.logged_in?`<span class="ok">✓ Signed in</span>${p.account?` · ${esc(p.account)}`:''}`:p.signing_in?'<span class="pending">Waiting for you to finish signing in in your browser…</span>':'<span class="pending">Not signed in</span>';
+    const action=p.installed&&!p.logged_in?`<button type="button" data-cli-login="${key}" ${p.signing_in?'disabled':''}>${p.signing_in?'Signing in…':'Sign in'}</button>`:'';
+    return `<label class="provider${key===chosen?' selected':''}"><input type="radio" name="ai-provider" value="${key}" aria-label="${esc(p.label)}" ${key===chosen?'checked':''}><span class="provider-text"><strong>${esc(p.label)}${key===ai.provider?' <span class="muted small">· in use</span>':''}</strong><span class="small muted">${esc(providerNotes[key])}${p.version?' · '+esc(p.version):''}</span><span class="small">${state}</span></span>${action}</label>`;
+  }).join('');
+  $('provider-options').querySelectorAll('input').forEach(input=>input.onchange=()=>{$('provider-options').dataset.choice=input.value;renderAiProviders();});
+  $('provider-options').querySelectorAll('[data-cli-login]').forEach(button=>button.onclick=async event=>{event.preventDefault();button.disabled=true;try{await post('/api/connections/cli-login',{provider:button.dataset.cliLogin});$('ai-result').textContent='A browser window opened to sign in. Finish there; this page updates automatically.';watchCliLogin(button.dataset.cliLogin,Date.now());}catch(e){$('ai-result').textContent=e.message;button.disabled=false;}});
+}
+function watchCliLogin(provider,started){clearTimeout(cliLoginTimer);cliLoginTimer=setTimeout(async()=>{await loadConnections(true);const p=connections?.ai.providers[provider];if(p?.logged_in){$('ai-result').textContent=`Signed in to ${p.label}.`;return;}if(p?.signing_in&&Date.now()-started<300000)watchCliLogin(provider,started);else $('ai-result').textContent=`Sign-in did not finish. You can also run "${p?.command||provider}" in a terminal to sign in.`;},3000);}
+$('ai-settings').oninput=()=>{$('ai-settings').dataset.dirty='true';};
+$('ai-settings').onsubmit=async event=>{event.preventDefault();const provider=$('provider-options').querySelector('input:checked')?.value;try{connections=await post('/api/connections/ai',{provider,model:$('ai-model').value});delete $('ai-settings').dataset.dirty;delete $('provider-options').dataset.choice;$('ai-result').textContent='Saved.';renderConnections();refreshDashboard();}catch(e){$('ai-result').textContent=e.message;}};
+$('ai-test').onclick=async()=>{$('ai-test').disabled=true;$('ai-result').textContent='Asking the AI coach… (uses the saved provider)';try{const result=await post('/api/connections/ai-test',{});$('ai-result').textContent=`✓ Replied in ${result.seconds}s: “${result.answer}”`;}catch(e){$('ai-result').textContent=e.message;}finally{$('ai-test').disabled=false;}};
+$('connections-refresh').onclick=()=>{$('ai-result').textContent='';loadConnections(true);};
+$('sync-settings').oninput=()=>{$('sync-settings').dataset.dirty='true';};
+$('sync-settings').onsubmit=async event=>{event.preventDefault();try{connections=await post('/api/connections/sync',{interval_min:Number($('sync-interval').value),days:Number($('sync-window').value)});delete $('sync-settings').dataset.dirty;$('sync-result').textContent='Saved.';renderConnections();}catch(e){$('sync-result').textContent=e.message;}};
 window.addEventListener('hashchange',navigate);window.addEventListener('history-loaded',refreshDashboard);navigate();if(data)refreshDashboard();
 
 // Pick up background (auto) syncs: reload when one starts or finishes.
