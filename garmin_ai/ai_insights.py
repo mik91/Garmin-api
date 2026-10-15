@@ -160,6 +160,10 @@ def _message(content: str) -> str:
     return _claude_message(content)
 
 
+def ping() -> str:
+    return _message("Connection check from the Garmin Insights app. Reply with one short friendly sentence.")
+
+
 def generate_summary(summary: dict) -> str:
     content = (
         "Here are my recent aggregated Garmin stats as JSON:\n\n"

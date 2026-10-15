@@ -10,10 +10,10 @@ from urllib.parse import parse_qs, urlsplit
 import pandas as pd
 from plotly.offline import get_plotlyjs
 
-from garmin_ai.config import DB_PATH
+from garmin_ai.config import DB_PATH, WEB_PORT
 from garmin_ai.discoveries import run_observations, recovery_observations
 from garmin_ai.goal_context import build_goal_context
-from garmin_ai import web_dashboard
+from garmin_ai import connections, web_dashboard
 
 ASSETS = Path(__file__).resolve().parent.parent / "web" / "dist"
 
@@ -57,7 +57,7 @@ def build_payload(query, db_path=DB_PATH):
 
 class Handler(BaseHTTPRequestHandler):
     def local_host(self):
-        return self.headers.get("Host") in ("127.0.0.1:8502", "localhost:8502")
+        return self.headers.get("Host") in (f"127.0.0.1:{WEB_PORT}", f"localhost:{WEB_PORT}")
 
     def json_response(self, value, status=200):
         body = json.dumps(value, allow_nan=False).encode()
@@ -70,7 +70,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         # Custom header + strict origin/host checks block cross-site local actions.
-        if not self.local_host() or self.headers.get("X-Garmin-Request") != "local-web" or self.headers.get("Origin") not in (None, "http://127.0.0.1:8502", "http://localhost:8502"):
+        if not self.local_host() or self.headers.get("X-Garmin-Request") != "local-web" or self.headers.get("Origin") not in (None, f"http://127.0.0.1:{WEB_PORT}", f"http://localhost:{WEB_PORT}"):
             self.json_response({"error": "Request must originate from the local app."}, 403)
             return
         try:
@@ -81,7 +81,11 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(body, dict):
                 raise ValueError("Expected a JSON object.")
             actions = {"/api/goals": web_dashboard.save_context, "/api/adherence": web_dashboard.save_adherence,
-                       "/api/sync": web_dashboard.begin_sync, "/api/chat": web_dashboard.chat, "/api/ai-preview": web_dashboard.ai_preview, "/api/activity-splits": web_dashboard.activity_splits}
+                       "/api/sync": web_dashboard.begin_sync, "/api/chat": web_dashboard.chat, "/api/ai-preview": web_dashboard.ai_preview, "/api/activity-splits": web_dashboard.activity_splits,
+                       "/api/connections/ai": connections.save_ai, "/api/connections/ai-test": connections.test_ai,
+                       "/api/connections/cli-login": connections.cli_login, "/api/connections/sync": connections.save_sync,
+                       "/api/connections/garmin-login": connections.garmin_login, "/api/connections/garmin-mfa": connections.garmin_mfa,
+                       "/api/connections/garmin-logout": connections.garmin_logout}
             action = actions.get(urlsplit(self.path).path)
             if action is None:
                 self.json_response({"error": "Unknown action."}, 404)
@@ -103,6 +107,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             elif route.path == "/api/activity-raw":
                 self.json_response(web_dashboard.activity_raw(parse_qs(route.query)))
+                return
+            elif route.path == "/api/connections":
+                self.json_response(connections.status())
                 return
             elif route.path == "/api/sync-status":
                 with web_dashboard.sync_lock:
@@ -137,7 +144,7 @@ if __name__ == "__main__":
     from garmin_ai import db
     with db.get_connection():
         pass
-    print("Garmin Insights: http://127.0.0.1:8502", flush=True)
+    print(f"Garmin Insights: http://127.0.0.1:{WEB_PORT}", flush=True)
     note = web_dashboard.start_auto_sync()
-    print(note or "Auto-sync is off (GARMIN_AUTO_SYNC_INTERVAL_MIN=0)", flush=True)
-    ThreadingHTTPServer(("127.0.0.1", 8502), Handler).serve_forever()
+    print(note or "Auto-sync is off (turn it on from the Connections page)", flush=True)
+    ThreadingHTTPServer(("127.0.0.1", WEB_PORT), Handler).serve_forever()
