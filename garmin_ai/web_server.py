@@ -1,5 +1,6 @@
 """Main local Garmin interface. Run with python -m garmin_ai.web_server."""
 import json
+import os
 from contextlib import closing
 import math
 import sqlite3
@@ -53,6 +54,13 @@ def build_payload(query, db_path=DB_PATH):
     return {"bounds": {"start": lower, "end": upper}, "start": start.date().isoformat(),
             "end": end.date().isoformat(), "runs": records(runs), "recovery": records(recovery),
             "total_activities": len(activities), "goal_context": build_goal_context(activities, daily)}
+
+
+
+class LocalServer(ThreadingHTTPServer):
+    # On Windows SO_REUSEADDR lets a second server bind the same port and the old
+    # one keeps answering, so a restarted server looks like it is running stale code.
+    allow_reuse_address = os.name != "nt"
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -147,4 +155,8 @@ if __name__ == "__main__":
     print(f"Garmin Insights: http://127.0.0.1:{WEB_PORT}", flush=True)
     note = web_dashboard.start_auto_sync()
     print(note or "Auto-sync is off (turn it on from the Connections page)", flush=True)
-    ThreadingHTTPServer(("127.0.0.1", WEB_PORT), Handler).serve_forever()
+    try:
+        server = LocalServer(("127.0.0.1", WEB_PORT), Handler)
+    except OSError:
+        raise SystemExit(f"Port {WEB_PORT} is already in use. Stop the other Garmin Insights server first.")
+    server.serve_forever()
