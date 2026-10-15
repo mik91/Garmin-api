@@ -13,7 +13,7 @@ Connect or explicitly ask for an AI insight.
 - **Discoveries** – exploratory comparisons of running efficiency, sleep and recovery
 - **Calendar** – planned vs. completed training with manual adherence corrections
 - **Race prediction** – Garmin's predictions alongside an independent model calibrated on your race efforts
-- **AI insights** – summaries and chat using Anthropic or OpenAI (optional)
+- **AI insights** – summaries and chat through the Claude Code or Codex CLI, using your existing subscription (optional)
 - **Auto-sync** – background refresh while the server is running
 
 ## Screenshots
@@ -37,7 +37,8 @@ Connect or explicitly ask for an AI insight.
 
 - Python 3.10+
 - A Garmin Connect account
-- Optional: an Anthropic or OpenAI API key for AI insights
+- Optional, for AI insights: [Claude Code](https://docs.claude.com/en/docs/claude-code) or the
+  [Codex CLI](https://github.com/openai/codex), installed and signed in (`claude` then `/login`, or `codex login`)
 
 ## Setup
 
@@ -61,12 +62,14 @@ GARMIN_EMAIL=you@example.com
 GARMIN_PASSWORD=your-garmin-password
 
 # Optional, for AI insights
-AI_PROVIDER=anthropic            # or openai
-ANTHROPIC_API_KEY=...
-OPENAI_API_KEY=...
+AI_PROVIDER=claude               # or codex
 ```
 
-See `.env.example` for all options (model names, database path, auto-sync interval).
+AI requests run the CLI on your machine, so they count against your Claude or ChatGPT
+subscription rather than a paid API key. Any `ANTHROPIC_API_KEY`/`OPENAI_API_KEY` in the
+environment is hidden from the CLI so it never bills an API account by accident.
+
+See `.env.example` for all options (AI model, database path, auto-sync interval).
 Never commit `.env`; it is already in `.gitignore`.
 
 ## Usage

@@ -1,6 +1,9 @@
 import json
-
-import anthropic
+import os
+import shutil
+import subprocess
+import tempfile
+from pathlib import Path
 
 from garmin_ai import config
 
@@ -37,8 +40,11 @@ SYSTEM_PROMPT = (
 )
 
 
-MAX_OUTPUT_TOKENS = 8192
-TRUNCATED_NOTE = "\n\n*(This answer was cut off at the length limit. Ask me to continue.)*"
+PROVIDERS = {"claude": "Claude Code CLI", "codex": "Codex CLI"}
+# Older .env files used API provider names; map them onto the matching CLI.
+PROVIDER_ALIASES = {"anthropic": "claude", "openai": "codex"}
+# Keys that would make the CLIs bill an API account instead of the user's subscription.
+API_KEY_ENV_VARS = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY", "CODEX_API_KEY")
 
 
 class AIProviderError(ValueError):
@@ -46,69 +52,112 @@ class AIProviderError(ValueError):
 
 
 def provider_name() -> str:
-    if config.AI_PROVIDER in {"anthropic", "openai"}:
-        return config.AI_PROVIDER
+    provider = PROVIDER_ALIASES.get(config.AI_PROVIDER, config.AI_PROVIDER)
+    if provider in PROVIDERS:
+        return provider
     raise AIProviderError(
-        f"Unsupported AI_PROVIDER '{config.AI_PROVIDER}'. Use 'anthropic' or 'openai'."
+        f"Unsupported AI_PROVIDER '{config.AI_PROVIDER}'. Use 'claude' or 'codex'."
     )
 
 
 def configured_model() -> str:
-    return config.OPENAI_MODEL if provider_name() == "openai" else config.ANTHROPIC_MODEL
+    return config.AI_MODEL or "default"
+
+
+def _cli_command() -> str:
+    return config.CLAUDE_CLI if provider_name() == "claude" else config.CODEX_CLI
+
+
+def _cli_path() -> str | None:
+    return shutil.which(_cli_command())
 
 
 def is_configured() -> bool:
-    if provider_name() == "openai":
-        return bool(config.OPENAI_API_KEY)
-    return bool(config.ANTHROPIC_API_KEY)
+    return _cli_path() is not None
 
 
 def missing_config_message() -> str:
-    if provider_name() == "openai":
-        return "Set OPENAI_API_KEY in .env to enable AI insights."
-    return "Set ANTHROPIC_API_KEY in .env to enable AI insights."
+    provider = provider_name()
+    if provider == "claude":
+        return "Install Claude Code and run `claude` once to sign in, or set CLAUDE_CLI in .env."
+    return "Install the Codex CLI and run `codex login`, or set CODEX_CLI in .env."
 
 
-def _anthropic_client() -> anthropic.Anthropic:
-    return anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+def _cli_env() -> dict:
+    env = os.environ.copy()
+    for name in API_KEY_ENV_VARS:
+        env.pop(name, None)
+    return env
 
 
-def _openai_client():
-    from openai import OpenAI
-
-    return OpenAI(api_key=config.OPENAI_API_KEY)
-
-
-def _anthropic_message(content: str) -> str:
-    client = _anthropic_client()
-    response = client.messages.create(
-        model=config.ANTHROPIC_MODEL,
-        max_tokens=MAX_OUTPUT_TOKENS,
-        thinking={"type": "adaptive"},
-        system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": content}],
-    )
-    text = next((b.text for b in response.content if b.type == "text"), "")
-    return text + TRUNCATED_NOTE if text and response.stop_reason == "max_tokens" else text
+def _run(args: list[str], prompt: str, workdir: str) -> subprocess.CompletedProcess:
+    path = _cli_path()
+    if path is None:
+        raise AIProviderError(missing_config_message())
+    try:
+        result = subprocess.run(
+            [path, *args], input=prompt, capture_output=True, text=True, encoding="utf-8",
+            errors="replace", cwd=workdir, env=_cli_env(), timeout=config.AI_CLI_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired as e:
+        raise AIProviderError(f"{PROVIDERS[provider_name()]} timed out after {config.AI_CLI_TIMEOUT_S}s.") from e
+    if result.returncode != 0:
+        raise AIProviderError(f"{PROVIDERS[provider_name()]} failed: {_error_detail(result)}")
+    return result
 
 
-def _openai_message(content: str) -> str:
-    client = _openai_client()
-    response = client.responses.create(
-        model=config.OPENAI_MODEL,
-        instructions=SYSTEM_PROMPT,
-        input=content,
-        max_output_tokens=MAX_OUTPUT_TOKENS,
-    )
-    text = getattr(response, "output_text", None) or ""
-    truncated = getattr(response, "status", None) == "incomplete"
-    return text + TRUNCATED_NOTE if text and truncated else text
+def _error_detail(result: subprocess.CompletedProcess) -> str:
+    lines = (result.stderr or result.stdout).strip().splitlines()
+    if not lines:
+        return f"exit code {result.returncode}"
+    detail = lines[-1].removeprefix("ERROR: ")
+    try:
+        payload = json.loads(detail)
+    except json.JSONDecodeError:
+        return detail
+    # Claude reports {"result": ...}; Codex reports {"error": {"message": ...}}.
+    error = payload.get("error")
+    return payload.get("result") or (error.get("message") if isinstance(error, dict) else None) or detail
+
+
+def _claude_message(content: str) -> str:
+    # Run in an empty temp dir so no project CLAUDE.md, settings or hooks leak in.
+    with tempfile.TemporaryDirectory() as workdir:
+        system_file = Path(workdir) / "system.txt"
+        system_file.write_text(SYSTEM_PROMPT, encoding="utf-8")
+        args = ["-p", "--output-format", "json", "--system-prompt-file", str(system_file),
+                "--tools", "", "--no-session-persistence"]
+        if config.AI_MODEL:
+            args += ["--model", config.AI_MODEL]
+        result = _run(args, content, workdir)
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return result.stdout.strip()
+    if payload.get("is_error"):
+        raise AIProviderError(f"Claude Code CLI failed: {payload.get('result') or 'unknown error'}")
+    return payload.get("result") or ""
+
+
+def _codex_message(content: str) -> str:
+    with tempfile.TemporaryDirectory() as workdir:
+        output_file = Path(workdir) / "answer.md"
+        args = ["exec", "--skip-git-repo-check", "--ephemeral", "--sandbox", "read-only",
+                "--color", "never", "-o", str(output_file)]
+        if config.AI_MODEL:
+            args += ["--model", config.AI_MODEL]
+        # Codex exec has no system prompt flag, so the instructions lead the prompt.
+        prompt = f"{SYSTEM_PROMPT}\n\nAnswer directly; do not run commands or edit files.\n\n{content}"
+        result = _run(args + ["-"], prompt, workdir)
+        if output_file.exists():
+            return output_file.read_text(encoding="utf-8").strip()
+    return result.stdout.strip()
 
 
 def _message(content: str) -> str:
-    if provider_name() == "openai":
-        return _openai_message(content)
-    return _anthropic_message(content)
+    if provider_name() == "codex":
+        return _codex_message(content)
+    return _claude_message(content)
 
 
 def generate_summary(summary: dict) -> str:
