@@ -331,8 +331,14 @@ body[data-page=connections] .app-toolbar{display:none}
 .conn-form{display:flex;gap:12px;align-items:end;flex-wrap:wrap}.conn-form label{display:flex;flex-direction:column;gap:6px;font-size:12px;font-weight:600;color:var(--muted)}
 .conn-form.stacked{display:grid;grid-template-columns:1fr 1fr;align-items:end}.conn-form.stacked button{grid-column:1/-1;justify-self:start}
 #ai-model{width:240px}#sync-window{width:90px}
-.conn-facts{display:grid;grid-template-columns:auto 1fr;gap:6px 18px;margin:0;font-size:14px}.conn-facts dt{color:var(--muted)}.conn-facts dd{margin:0;overflow-wrap:anywhere}
-.conn-actions{display:flex;gap:10px;align-items:center}
+.conn-facts{display:grid;grid-template-columns:auto 1fr;gap:8px 20px;margin:0;font-size:14px;padding:14px 16px;background:var(--panel2);border:1px solid var(--line);border-radius:10px}.conn-facts dt{color:var(--muted)}.conn-facts dd{margin:0;overflow-wrap:anywhere}
+#garmin-body{display:flex;flex-direction:column;gap:16px;flex:1}
+.conn-footer{margin-top:auto;display:flex;align-items:center;gap:14px;padding-top:16px;border-top:1px solid var(--line)}
+.conn-footer-note{font-size:12px;color:var(--muted);flex:1;min-width:0}
+.icon-button{display:inline-flex;align-items:center;gap:8px}.icon-button svg{width:16px;height:16px;flex:none;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.icon-button.spinning svg{animation:spin 1s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}
+.ghost-danger{background:transparent;border-color:var(--line2);color:var(--muted)}.ghost-danger:hover{background:rgba(251,113,133,.1);border-color:rgba(251,113,133,.45);color:#fb7185}
+@media(prefers-reduced-motion:reduce){.icon-button.spinning svg{animation:none}}
 .conn-result{margin:0;font-size:13px;color:var(--muted);min-height:1em}.conn-result:empty{display:none}
 .provider-options{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
 .provider{display:flex;align-items:flex-start;gap:12px;padding:14px 16px;border:1px solid var(--line2);border-radius:10px;background:var(--panel2);cursor:pointer;transition:border-color .15s,background .15s}

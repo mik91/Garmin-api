@@ -352,8 +352,8 @@ function renderGarmin(){
   const g=connections.garmin,body=$('garmin-body');garminMfa=garminMfa||g.awaiting_mfa;
   if(g.connected&&!garminMfa){
     badge('garmin-badge','Connected','on');
-    body.innerHTML=`<dl class="conn-facts"><dt>Account</dt><dd>${esc(g.display_name||g.email||'Signed in')}</dd>${g.display_name&&g.email?`<dt>Email</dt><dd>${esc(g.email)}</dd>`:''}<dt>Last sync</dt><dd>${g.last_synced_at?esc(dateLabel(g.last_synced_at)):'Not synced yet'}</dd></dl><div class="conn-actions"><button class="primary" id="garmin-sync">Sync now ↻</button><button class="text-button" id="garmin-logout">Sign out</button></div>`;
-    $('garmin-sync').onclick=()=>{location.hash='overview';$('sync-now').click();};
+    body.innerHTML=`<dl class="conn-facts"><dt>Account</dt><dd>${esc(g.display_name||g.email||'Signed in')}</dd>${g.display_name&&g.email?`<dt>Email</dt><dd>${esc(g.email)}</dd>`:''}<dt>Last sync</dt><dd>${g.last_synced_at?`${esc(syncedLabel(g.last_synced_at))}`:'Not synced yet'}</dd></dl><div class="conn-footer"><button class="primary icon-button" id="garmin-sync"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 0 0-14.9-3M4 13a8 8 0 0 0 14.9 3"/><path d="M4 4v4h4M20 20v-4h-4"/></svg><span>Sync now</span></button><span class="conn-footer-note" id="garmin-sync-note">Fetches the last ${Number($('sync-days').value)||7} days</span><button class="ghost-danger icon-button" id="garmin-logout"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3M10 17l-5-5 5-5M5 12h11"/></svg><span>Sign out</span></button></div>`;
+    $('garmin-sync').onclick=()=>syncFromCard();
     $('garmin-logout').onclick=async()=>{if(!confirm('Sign out of Garmin? Your synced history stays on this computer.'))return;try{connections=await post('/api/connections/garmin-logout',{});$('garmin-result').textContent='Signed out.';renderConnections();}catch(e){$('garmin-result').textContent=e.message;}};
     return;
   }
@@ -368,6 +368,13 @@ function renderGarmin(){
   badge('garmin-badge','Not connected','off');
   body.innerHTML=`<form id="garmin-login-form" class="conn-form stacked"><label>Email<input id="garmin-email" type="email" autocomplete="username" required value="${esc(g.email)}"></label><label>Password<input id="garmin-password" type="password" autocomplete="current-password" required maxlength="256"></label><button type="submit" class="primary">Sign in to Garmin</button></form><p class="muted small">Your password is sent only to Garmin to get a sign-in token, then discarded.</p>`;
   $('garmin-login-form').onsubmit=async event=>{event.preventDefault();await garminAction(event.submitter,'/api/connections/garmin-login',{email:$('garmin-email').value,password:$('garmin-password').value},'Signing in…');};
+}
+function syncedLabel(value){const then=new Date(value),mins=Math.round((Date.now()-then)/60000);if(isNaN(mins))return dateLabel(value);const rel=mins<1?'just now':mins<60?`${mins} min ago`:mins<1440?`${Math.round(mins/60)} h ago`:`${Math.round(mins/1440)} d ago`;return `${then.toLocaleString(undefined,{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})} · ${rel}`;}
+async function syncFromCard(){
+  const button=$('garmin-sync'),note=$('garmin-sync-note');button.disabled=true;button.classList.add('spinning');button.querySelector('span').textContent='Syncing…';
+  $('sync-now').click();
+  const finish=async()=>{try{const state=await fetch('/api/sync-status').then(r=>r.json());if(state.running){if($('garmin-sync-note'))$('garmin-sync-note').textContent=state.message;setTimeout(finish,2000);return;}await loadConnections(true);$('garmin-result').textContent=state.message;}catch(e){$('garmin-result').textContent=e.message;}};
+  note.textContent='Starting sync…';setTimeout(finish,1500);
 }
 async function garminAction(button,path,body,busy){
   button.disabled=true;$('garmin-result').textContent=busy;
