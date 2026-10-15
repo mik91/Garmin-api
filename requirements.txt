@@ -3,6 +3,4 @@ curl_cffi
 pandas
 streamlit
 plotly
-anthropic
-openai
 python-dotenv

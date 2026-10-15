@@ -24,12 +24,13 @@ GARMIN_AUTO_SYNC_DAYS = int(os.environ.get("GARMIN_AUTO_SYNC_DAYS", "7"))
 # Minutes between background syncs while the web server runs; 0 turns it off.
 GARMIN_AUTO_SYNC_INTERVAL_MIN = int(os.environ.get("GARMIN_AUTO_SYNC_INTERVAL_MIN", "60"))
 
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
-ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-opus-4-8")
-
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
-OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.5")
-
-AI_PROVIDER = os.environ.get("AI_PROVIDER", "anthropic").strip().lower()
+# AI insights run through the locally installed CLIs, so they use the user's
+# Claude or ChatGPT subscription instead of a paid API key.
+AI_PROVIDER = os.environ.get("AI_PROVIDER", "claude").strip().lower()
+# Empty means the CLI's own default model.
+AI_MODEL = os.environ.get("AI_MODEL", "").strip()
+CLAUDE_CLI = os.environ.get("CLAUDE_CLI", "claude")
+CODEX_CLI = os.environ.get("CODEX_CLI", "codex")
+AI_CLI_TIMEOUT_S = int(os.environ.get("AI_CLI_TIMEOUT_S", "300"))
 
 DB_PATH = str(PROJECT_ROOT / os.environ.get("GARMIN_DB_PATH", "data/garmin.db"))
