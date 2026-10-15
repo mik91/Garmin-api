@@ -1,0 +1,99 @@
+# Garmin Insights
+
+A local dashboard for your Garmin Connect data. It syncs activities, sleep and
+daily stats into a SQLite database on your machine, then shows trends, training
+load, a training calendar, race predictions, and optional AI coaching insights.
+
+Your data stays local. Network requests are made only when you sync with Garmin
+Connect or explicitly ask for an AI insight.
+
+## Features
+
+- **Overview, Trends, Training, Activities** – charts and tables built from your synced history, including per-activity splits
+- **Discoveries** – exploratory comparisons of running efficiency, sleep and recovery
+- **Calendar** – planned vs. completed training with manual adherence corrections
+- **Race prediction** – Garmin's predictions alongside an independent model calibrated on your race efforts
+- **AI insights** – summaries and chat using Anthropic or OpenAI (optional)
+- **Auto-sync** – background refresh while the server is running
+
+## Requirements
+
+- Python 3.10+
+- A Garmin Connect account
+- Optional: an Anthropic or OpenAI API key for AI insights
+
+## Setup
+
+```bash
+git clone https://github.com/mik91/Garmin-api.git
+cd Garmin-api
+python -m venv .venv
+```
+
+Activate the environment (`.\.venv\Scripts\Activate.ps1` on Windows,
+`source .venv/bin/activate` on macOS/Linux), then install dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+Copy `.env.example` to `.env` and fill in your values:
+
+```env
+GARMIN_EMAIL=you@example.com
+GARMIN_PASSWORD=your-garmin-password
+
+# Optional, for AI insights
+AI_PROVIDER=anthropic            # or openai
+ANTHROPIC_API_KEY=...
+OPENAI_API_KEY=...
+```
+
+See `.env.example` for all options (model names, database path, auto-sync interval).
+Never commit `.env`; it is already in `.gitignore`.
+
+## Usage
+
+Sync your data first (you will be prompted for an MFA code if Garmin requires one):
+
+```bash
+python cli.py sync --days 90
+```
+
+Start the web interface and open http://127.0.0.1:8502:
+
+```bash
+python -m garmin_ai.web_server
+```
+
+On Windows you can also run `.\start.ps1`. The older Streamlit dashboard is still
+available with `streamlit run app.py` (or `.\start.ps1 -Legacy`) on port 8501.
+
+## Project layout
+
+```text
+garmin_ai/      sync, database, analysis, race prediction, AI and web server code
+web/dist/       static HTML/CSS/JS frontend served by the local server
+app.py          legacy Streamlit dashboard
+cli.py          command-line sync
+tests/          unit tests (run with: python -m pytest)
+```
+
+Generated at runtime and ignored by git: `.garmin_tokens/` (Garmin session) and
+`data/garmin.db` (your synced data).
+
+## Security
+
+The web server binds to `127.0.0.1` only, serves an explicit allowlist of static
+files, and rejects cross-origin API requests. It is meant for personal local use;
+do not expose it to the internet.
+
+## Disclaimer
+
+This project is not affiliated with or endorsed by Garmin. It uses the unofficial
+[`garminconnect`](https://github.com/cyberjunky/python-garminconnect) library.
+Insights and predictions are exploratory and are not medical or coaching advice.
+
+## License
+
+[MIT](LICENSE)
