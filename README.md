@@ -16,6 +16,23 @@ Connect or explicitly ask for an AI insight.
 - **AI insights** – summaries and chat using Anthropic or OpenAI (optional)
 - **Auto-sync** – background refresh while the server is running
 
+## Screenshots
+
+*Shown with synthetic demo data.*
+
+![Overview](docs/screenshots/overview.png)
+
+<table>
+  <tr>
+    <td><img src="docs/screenshots/discoveries.png" alt="Discoveries: goal target and running efficiency"></td>
+    <td><img src="docs/screenshots/training.png" alt="Training: monthly statistics and heart-rate zones"></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/trends.png" alt="Trends: overnight HRV and sleep stages"></td>
+    <td><img src="docs/screenshots/activities.png" alt="Activities: weekly volume and activity list"></td>
+  </tr>
+</table>
+
 ## Requirements
 
 - Python 3.10+
