@@ -49,7 +49,7 @@ DATE_PRESETS = (
 )
 
 
-st.set_page_config(page_title="Garmin Insights", page_icon="🏃", layout="wide")
+st.set_page_config(page_title="Trio", page_icon="🏃", layout="wide")
 
 
 st.markdown(
@@ -972,7 +972,7 @@ st.sidebar.markdown(
     <div class="app-brand">
         <div class="app-brand__mark">↗</div>
         <div>
-            <div class="app-brand__name">Garmin Insights</div>
+            <div class="app-brand__name">Trio</div>
             <div class="app-brand__tagline">Training &amp; recovery dashboard</div>
         </div>
     </div>

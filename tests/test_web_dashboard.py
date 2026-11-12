@@ -1,16 +1,15 @@
-import http.client
 import json
 from contextlib import closing
 import sqlite3
 import tempfile
-import threading
 import unittest
-from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
-from garmin_ai import db, web_dashboard
-from garmin_ai.web_server import Handler
+from starlette.testclient import TestClient
+
+from garmin_ai import config, db, web_dashboard
+from garmin_ai.web_server import create_app
 
 
 class WebDashboardTests(unittest.TestCase):
@@ -28,6 +27,22 @@ class WebDashboardTests(unittest.TestCase):
         self.assertEqual(result["activities"], [])
         self.assertEqual(result["calendar"], [])
         json.dumps(result, allow_nan=False)
+
+    def test_profile_races_and_season_are_sent(self):
+        races = [{"name": "Tri", "date": "2099-09-12", "priority": "B"},
+                 {"name": "City 10K", "date": "2099-05-29", "priority": "a", "distance": "10K", "goal": "sub 38:30"}]
+        with closing(sqlite3.connect(self.path)) as conn, conn:
+            conn.execute("INSERT INTO coach_profile(section, content, updated_at) VALUES('races', ?, '2026-11-12')",
+                         (json.dumps(races),))
+        result = web_dashboard.payload({"start": ["2026-09-01"], "end": ["2026-09-09"]}, self.path)
+        self.assertEqual([r["name"] for r in result["races"]], ["City 10K", "Tri"])
+        self.assertEqual(result["season"]["next_a_race"]["name"], "City 10K")
+        self.assertEqual(result["season"]["phase"], "base")
+
+    def test_no_races_send_an_empty_list(self):
+        result = web_dashboard.payload({"start": ["2026-09-01"], "end": ["2026-09-09"]}, self.path)
+        self.assertEqual(result["races"], [])
+        self.assertIsNone(result["season"])
 
     def test_date_filter_does_not_hide_calendar_history_or_expose_raw(self):
         with closing(sqlite3.connect(self.path)) as conn, conn:
@@ -52,30 +67,29 @@ class WebDashboardTests(unittest.TestCase):
                 self.assertEqual(conn.execute("SELECT COUNT(*) FROM adherence_overrides").fetchone()[0], 0)
 
     def test_http_actions_require_local_headers_and_reject_cross_origin(self):
-        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        try:
-            with patch.object(web_dashboard, "save_context", return_value={"message": "saved"}) as action:
-                for origin, custom, expected in [("http://evil.example", True, 403), (None, False, 403),
-                                                  ("http://127.0.0.1:8502", True, 200)]:
-                    connection = http.client.HTTPConnection("127.0.0.1", server.server_port)
-                    headers = {"Host": "127.0.0.1:8502", "Content-Type": "application/json"}
-                    if origin:
-                        headers["Origin"] = origin
-                    if custom:
-                        headers["X-Garmin-Request"] = "local-web"
-                    connection.request("POST", "/api/goals", "{}", headers)
-                    response = connection.getresponse()
-                    self.assertEqual(response.status, expected)
-                    response.read()
-                    connection.close()
-                action.assert_called_once()
-        finally:
-            server.shutdown()
-            server.server_close()
-            thread.join()
+        client = TestClient(create_app(), base_url="http://127.0.0.1:8502")
+        with patch.object(web_dashboard, "save_context", return_value={"message": "saved"}) as action,                 patch.object(config, "WEB_PORT", 8502):
+            for origin, custom, expected in [("http://evil.example", True, 403), (None, False, 403),
+                                              ("http://127.0.0.1:8502", True, 200)]:
+                headers = {"Content-Type": "application/json"}
+                if origin:
+                    headers["Origin"] = origin
+                if custom:
+                    headers["X-Garmin-Request"] = "local-web"
+                self.assertEqual(client.post("/api/goals", content="{}", headers=headers).status_code, expected)
+            action.assert_called_once()
+            self.assertEqual(client.get("/", headers={"Host": "evil.example:8502"}).status_code, 403)
 
+    def test_static_assets_revalidate_by_etag(self):
+        client = TestClient(create_app(), base_url="http://127.0.0.1:8502")
+        with patch.object(config, "WEB_PORT", 8502):
+            first = client.get("/plotly.js")
+            self.assertEqual(first.status_code, 200)
+            self.assertEqual(first.headers["cache-control"], "no-cache")
+            self.assertEqual(first.headers["content-encoding"], "gzip")
+            again = client.get("/plotly.js", headers={"If-None-Match": first.headers["etag"]})
+            self.assertEqual(again.status_code, 304)
+            self.assertEqual(again.content, b"")
 
 if __name__ == "__main__":
     unittest.main()

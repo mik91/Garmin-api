@@ -1,0 +1,14 @@
+.git
+.env
+.env.*
+.garmin_tokens
+data
+.venv
+venv
+__pycache__
+*.pyc
+.pytest_cache
+.claude
+.agents
+docs
+tests

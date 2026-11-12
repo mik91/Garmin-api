@@ -28,6 +28,11 @@ SPLIT_KEYS = {
     "Marathon": "fastestSplit_42195",
 }
 
+# Ranking penalty per natural-log unit of distance gap between a race and the
+# target. A 5K converted to a half marathon (ratio 4.2) carries about 2.9%, so a
+# recent half wins unless the 5K converts to a clearly faster time.
+EXTRAPOLATION_PENALTY = 0.02
+
 RECOMMENDED_WEEKLY_KM = {
     "5K": 15.0,
     "10K": 25.0,
@@ -147,9 +152,12 @@ def _best_local_prediction(
     for effort in efforts:
         predicted = riegel_time(effort["seconds"], effort["distance_m"], target_distance_m)
         age_days = max(0, (as_of - date.fromisoformat(effort["date"])).days)
-        # Compare performances after a small staleness penalty. A recent easy or
-        # poorly executed race must not displace a substantially stronger result.
-        rank = predicted * (1 + min(age_days, 365) / 365 * 0.03)
+        # Compare performances after small staleness and distance-gap penalties. A
+        # recent easy or poorly executed race must not displace a substantially
+        # stronger result, but between close performances the race nearer the
+        # target distance is the better evidence.
+        gap = abs(math.log(target_distance_m / effort["distance_m"]))
+        rank = predicted * (1 + min(age_days, 365) / 365 * 0.03) * (1 + gap * EXTRAPOLATION_PENALTY)
         candidates.append((rank, predicted, effort))
     _, seconds, source = min(candidates, key=lambda candidate: candidate[0])
     return {

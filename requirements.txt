@@ -1,6 +1,3 @@
-garminconnect==0.3.6
-curl_cffi
-pandas
+# Local install: the hosted server's dependencies plus the legacy Streamlit dashboard.
+-r requirements-server.txt
 streamlit
-plotly
-python-dotenv

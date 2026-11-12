@@ -1,5 +1,6 @@
 """Data and actions for the main local interface, reusing the existing engines."""
 import json
+import logging
 from contextlib import closing
 import sqlite3
 import threading
@@ -10,6 +11,7 @@ import pandas as pd
 
 from garmin_ai import analysis, ai_insights, calendar, config, insights_engine, race_prediction, web_extras
 
+log = logging.getLogger(__name__)
 sync_lock = threading.Lock()
 sync_status = {"running": False, "message": "", "finished": 0}
 
@@ -30,6 +32,55 @@ def read_history(db_path=None):
             frames[name] = frame.sort_values(column)
     frames["activities"] = analysis.ensure_activity_categories(frames["activities"])
     return frames
+
+
+def coach_races(db_path=None):
+    """The coach profile's races (oldest first) and the season phase from the next A race.
+    Empty when the profile has no races or they cannot be read."""
+    from garmin_ai.coaching import history, review
+    try:
+        with closing(sqlite3.connect(Path(db_path or config.DB_PATH).resolve().as_uri()+"?mode=ro", uri=True)) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute("SELECT content FROM coach_profile WHERE section = 'races'").fetchone()
+            races = review.parse_races(row["content"] if row else None)
+            season = review.season_phase(races, date.today().isoformat(), history.rules(conn)) if races else None
+    except (sqlite3.Error, ValueError) as error:
+        log.warning("Could not read the profile races: %s", error)
+        return [], None
+    return races, season
+
+
+def latest_review(week=None, db_path=None):
+    """The stored automatic weekly review (newest, or for one week), or None."""
+    from garmin_ai.coaching import weekly
+    try:
+        with closing(sqlite3.connect(Path(db_path or config.DB_PATH).resolve().as_uri()+"?mode=ro", uri=True)) as conn:
+            conn.row_factory = sqlite3.Row
+            return weekly.latest(conn, week)
+    except sqlite3.Error as error:
+        log.warning("Could not read the weekly review: %s", error)
+        return None
+
+
+def weekly_card(db_path=None):
+    """The latest review's card, for payloads the app already loads (dashboard, plan)."""
+    from garmin_ai.coaching import weekly
+    return weekly.card_summary(latest_review(db_path=db_path))
+
+
+def review_payload(query):
+    """GET /api/review[?week=YYYY-MM-DD]: the latest automatic weekly review, or review null."""
+    from garmin_ai.coaching import weekly
+    week = query.get("week", [None])[0]
+    if week:
+        week = weekly.week_start_of(week)
+    try:
+        schedule = weekly.Schedule.parse(config.GARMIN_WEEKLY_REVIEW)
+    except ValueError:
+        schedule = None
+    return {"review": latest_review(week), "week": week,
+            "schedule": schedule.describe() if schedule else None,
+            "timezone": config.GARMIN_TIMEZONE or None}
 
 
 def bounds(query):
@@ -68,6 +119,7 @@ def payload(query, db_path=None):
               "model": ai_insights.configured_model()}
     except ValueError:
         ai = {"configured": False, "provider": config.AI_PROVIDER, "model": ""}
+    races, season = coach_races(db_path)
     quality = web_extras.data_quality_notes(
         window(history["daily_stats"], start, end), window(history["sleep"], start, end), selected,
         window(history["body_composition"], start, end),
@@ -80,8 +132,10 @@ def payload(query, db_path=None):
             "race_model": race_prediction.build_model(activity, history["race_predictions"]),
             "insights": report,
             "goals": dict(history["goals"][["key", "value"]].itertuples(index=False, name=None)),
+            "races": races, "season": season,
+            "weekly_review": weekly_card(db_path),
             "sync_state": dict(history["sync_state"][["key", "value"]].itertuples(index=False, name=None)),
-            "ai": ai}
+            "ai": ai, "hosted": config.HOSTED}
 
 
 def save_context(body):
@@ -112,6 +166,11 @@ def save_adherence(body):
     return {"message": "Workout status saved."}
 
 
+def current_sync_status():
+    with sync_lock:
+        return dict(sync_status)
+
+
 def start_sync(days):
     """Start a background sync unless one is already running. Returns the status."""
     with sync_lock:
@@ -126,6 +185,7 @@ def start_sync(days):
             sync.sync(days=days, prompt_mfa=needs_mfa)
             message = "Sync complete. History refreshed."
         except Exception as error:
+            log.warning("Sync failed", exc_info=True)
             message = "Sync failed: " + sync.friendly_error(error)
         with sync_lock:
             sync_status.update(running=False, message=message, finished=sync_status["finished"] + 1)
@@ -157,21 +217,104 @@ def auto_sync_loop(check_seconds=60):
                 last = db.get_sync_state(conn).get("last_synced_at")
             age = (datetime.now() - datetime.fromisoformat(last)).total_seconds() if last else float("inf")
             due = age >= interval_min * 60 and time.time() - last_attempt >= interval_min * 60
-            if due and (config.GARMIN_EMAIL or Path(config.GARMIN_TOKENSTORE).exists()):
+            if due and _can_sync():
                 last_attempt = time.time()
                 start_sync(days)
-        except Exception:
+        except LookupError:
             pass
+        except Exception:
+            log.exception("Auto-sync check failed")
+        time.sleep(check_seconds)
+
+
+def _can_sync() -> bool:
+    return bool(config.GARMIN_EMAIL or Path(config.GARMIN_TOKENSTORE).exists() or config.HEVY_API_KEY)
+
+
+def _local_now():
+    """Now in GARMIN_TIMEZONE (naive), or the server's local time when it is unset or unknown."""
+    from datetime import datetime
+    if config.GARMIN_TIMEZONE:
+        try:
+            from zoneinfo import ZoneInfo
+            return datetime.now(ZoneInfo(config.GARMIN_TIMEZONE)).replace(tzinfo=None)
+        except Exception:
+            log.warning("Unknown GARMIN_TIMEZONE %r; using the server's local time", config.GARMIN_TIMEZONE)
+    return datetime.now()
+
+
+def _sync_and_wait(timeout_s=1200, poll_s=5):
+    """Run a sync now (or wait for the one already running) so the review sees today's data."""
+    import time
+    with sync_lock:
+        before = sync_status["finished"]
+    start_sync(config.GARMIN_AUTO_SYNC_DAYS)
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        with sync_lock:
+            if not sync_status["running"] and sync_status["finished"] > before:
+                return sync_status["message"]
+        time.sleep(poll_s)
+    return "Sync still running; reviewed the data already synced."
+
+
+def run_weekly_review_if_due(now=None, sync=True):
+    """Store the review for the week of the latest scheduled time unless it exists already.
+    Returns the new coach_log entry, or None when nothing was due."""
+    from garmin_ai import db
+    from garmin_ai.coaching import weekly
+    schedule = weekly.Schedule.parse(config.GARMIN_WEEKLY_REVIEW)
+    if schedule is None:
+        return None
+    moment = schedule.last_run_before(now or _local_now())
+    monday = weekly.monday_of(moment.date()).isoformat()
+    with db.get_connection() as conn:
+        if weekly.has_review(conn, monday):
+            return None
+    if sync and _can_sync():
+        log.info("Weekly review for %s: %s", monday, _sync_and_wait())
+    with db.get_connection() as conn:
+        synced_at = db.get_sync_state(conn).get("last_synced_at")
+        entry = weekly.run(conn, monday, today=moment.date(), synced_at=synced_at)
+    log.info("Weekly review stored for %s: %s", monday, entry["summary"])
+    return entry
+
+
+def weekly_review_loop(check_seconds=300, first_delay_s=90, retry_s=3600):
+    """Check every few minutes whether the weekly review is due. Waits first so the server
+    (and the startup sync) can settle; a failed week is retried after retry_s."""
+    import time
+    time.sleep(first_delay_s)
+    failed_at = 0.0
+    while True:
+        if time.time() - failed_at >= retry_s:
+            try:
+                run_weekly_review_if_due()
+            except Exception:
+                failed_at = time.time()
+                log.exception("Weekly review failed")
         time.sleep(check_seconds)
 
 
 def start_auto_sync():
-    """Launch the scheduler thread; returns a description, or None when disabled."""
+    """Launch the scheduler threads (sync and weekly review); returns a description, or None
+    when both are off."""
+    from garmin_ai.coaching import weekly
     threading.Thread(target=auto_sync_loop, daemon=True).start()
+    notes = []
     interval = config.GARMIN_AUTO_SYNC_INTERVAL_MIN
-    if interval <= 0:
-        return None
-    return f"Auto-sync every {interval} min ({config.GARMIN_AUTO_SYNC_DAYS} days)"
+    if interval > 0:
+        notes.append(f"Auto-sync every {interval} min ({config.GARMIN_AUTO_SYNC_DAYS} days)")
+    try:
+        schedule = weekly.Schedule.parse(config.GARMIN_WEEKLY_REVIEW)
+    except ValueError as error:
+        log.warning("%s Weekly review is off.", error)
+        schedule = None
+    if schedule:
+        threading.Thread(target=weekly_review_loop, daemon=True).start()
+        zone = config.GARMIN_TIMEZONE or "server time"
+        notes.append(f"weekly review {schedule.describe()} ({zone})")
+    return "; ".join(notes) or None
 
 
 def activity_raw(query):

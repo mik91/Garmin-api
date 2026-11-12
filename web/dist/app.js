@@ -1,5 +1,12 @@
 'use strict';
 const $ = id => document.getElementById(id);
+// Hosted mode: an expired sign-in answers 401, so send the browser back to the sign-in page.
+const nativeFetch = window.fetch.bind(window);
+window.fetch = async (...args) => {
+  const response = await nativeFetch(...args);
+  if (response.status === 401) location.href = '/login?next=' + encodeURIComponent(location.pathname + location.hash);
+  return response;
+};
 let data, view = 'efficiency', selected = null, requestId = 0, controller, syncing = false, plotVersion = 0;
 const green = '#9fd356', blue = '#5aa9e6', muted = '#8b97a8';
 const valid = x => typeof x === 'number' && Number.isFinite(x);
@@ -32,6 +39,12 @@ async function load(all=false) {
   }catch(error){if(error.name!=='AbortError' && id===requestId){$('status').classList.add('error');$('status').textContent=error.message;const globalStatus=document.getElementById('dashboard-status');if(globalStatus)globalStatus.textContent=error.message;}}
   finally{if(id===requestId)document.body.classList.remove('loading');}
 }
+function paceTicks(values){
+  const v=values.filter(valid);if(!v.length)return {};
+  const lo=Math.min(...v),hi=Math.max(...v),step=hi-lo<=2?.25:hi-lo<=5?.5:1,ticks=[];
+  for(let t=Math.floor(lo/step)*step;t<=Math.ceil(hi/step)*step+1e-9;t+=step)ticks.push(+t.toFixed(2));
+  return {tickmode:'array',tickvals:ticks,ticktext:ticks.map(pace)};
+}
 function trace(list,x,y,color){return {type:'scatter',mode:'markers',x:list.map(x),y:list.map(y),customdata:list.map(r=>r._key||keyDate(r)),text:list.map(r=>r.n?`${aggMode==='week'?'Week of':'Month of'} ${dateLabel(r.date)} · ${r.n} run${r.n>1?'s':''}`:dateLabel(r.date)),marker:{size:9,color,line:{width:1,color:'#1a1d22'},opacity:.9},hovertemplate:'%{text}<br>%{y:.2f}<extra></extra>'};}
 let aggMode='week', plotCtx={list:[],agg:false}, subRun=null;
 function aggregate(list){
@@ -47,15 +60,18 @@ async function render(){
   $('agg-wrap').hidden=view!=='efficiency';
   $('lag-wrap').hidden=view!=='recovery';
   document.querySelectorAll('[data-view]').forEach(b=>{b.classList.toggle('active',b.dataset.view===view);b.setAttribute('aria-pressed',String(b.dataset.view===view));});
-  const chartLayout=layout(view==='recovery'?'HRV change (ms)':'Pace (min/km)', $('main-chart').clientHeight || 370);
+  const chartLayout=layout(view==='recovery'?'HRV change (ms)':'Pace (/km)', $('main-chart').clientHeight || 370);
   let main, companion;
   if(view==='efficiency'){
     $('chart-title').textContent=agg?`${aggMode==='week'?'Weekly':'Monthly'} pace trend`:'Pace through your training';
     $('chart-subtitle').textContent=agg?'Median pace of qualifying runs per period; bigger dots mean more runs. Lower is faster.':'Lower means faster. Select a run or drag to zoom into a period.';
     main=trace(plotList,r=>r.date,r=>r.pace_min_km,plotList.map(r=>r.avg_hr));
-    if(agg){main.mode='lines+markers';main.line={color:'#334155',width:2};main.marker.size=plotList.map(r=>Math.min(8+r.n*2,26));main.hovertemplate='%{text}<br>%{y:.2f} min/km<extra></extra>';}
+    if(agg){main.mode='lines+markers';main.line={color:'#334155',width:2};main.marker.size=plotList.map(r=>Math.min(8+r.n*2,26));}
     main.marker.colorscale=[[0,blue],[1,green]];main.marker.showscale=false;
-    main.hovertemplate='%{text}<br>%{y:.2f} min/km<extra></extra>';
+    // Pace reads as m:ss, so the hover text and the axis ticks are formatted here.
+    main.text=main.text.map((t,i)=>`${t}<br>${pace(plotList[i].pace_min_km)} /km`);
+    main.hovertemplate='%{text}<extra></extra>';
+    Object.assign(chartLayout.yaxis,paceTicks(plotList.map(r=>r.pace_min_km)));
   }else{
     $('chart-title').textContent='Your response to training load';
     $('chart-subtitle').textContent='HRV change from the activity morning. Green marks higher-load days.';
@@ -138,18 +154,19 @@ function finding(list){
   first=first.filter(r=>valid(r[metric]));second=second.filter(r=>valid(r[metric]));
   if(Math.min(first.length,second.length)<5){$('finding-title').textContent='More comparable days needed';$('finding').textContent=`The two groups have ${first.length} and ${second.length} valid days. Each needs at least 5 before a numerical comparison is shown.`;}
   else{const difference=median(first.map(r=>r[metric]))-median(second.map(r=>r[metric]));
-    $('finding-title').textContent=Math.abs(difference)<.005?'No difference in group medians':`${fmt(Math.abs(difference),2)} ${unit} ${difference>0?'higher':'lower'}`;
-    $('finding').textContent=`${label}: ${fmt(median(first.map(r=>r[metric])),2)} ${unit}, versus ${fmt(median(second.map(r=>r[metric])),2)} in the comparison group (${first.length} and ${second.length} days). ${metric==='pace_min_km'?'Lower pace means faster running.':''}`;
+    const isPace=metric==='pace_min_km',show=x=>isPace?pace(x)+' /km':`${fmt(x,2)} ${unit}`;
+    $('finding-title').textContent=Math.abs(difference)<.005?'No difference in group medians':isPace?`${Math.round(Math.abs(difference)*60)} s/km ${difference>0?'slower':'faster'}`:`${fmt(Math.abs(difference),2)} ${unit} ${difference>0?'higher':'lower'}`;
+    $('finding').textContent=`${label}: ${show(median(first.map(r=>r[metric])))}, versus ${show(median(second.map(r=>r[metric])))} in the comparison group (${first.length} and ${second.length} days). ${metric==='pace_min_km'?'Lower pace means faster running.':''}`;
   }
   $('method').textContent=method+' Five days is a display minimum, not statistical validation. Comparisons use the full filtered range, even when you zoom.';
 }
 function evidence(list){
-  const columns=view==='recovery'?[['date','Activity date'],['load','Garmin load'],['group','Load group'],['outcome_date','Recovery date'],['hrv_change','HRV change, ms'],['resting_hr_change','Resting HR change, bpm']]:[['date','Run date'],['distance_km','Distance, km'],['pace_min_km','Pace, min/km'],['avg_hr','Avg HR, bpm'],['efficiency','Efficiency, m/min per bpm'],['climb_m_per_km','Climb, m/km']];
+  const columns=view==='recovery'?[['date','Activity date'],['load','Garmin load'],['group','Load group'],['outcome_date','Recovery date'],['hrv_change','HRV change, ms'],['resting_hr_change','Resting HR change, bpm']]:[['date','Run date'],['distance_km','Distance, km'],['pace_min_km','Pace, /km'],['avg_hr','Avg HR, bpm'],['efficiency','Efficiency, m/min per bpm'],['climb_m_per_km','Climb, m/km']];
   const table=document.createElement('table'),head=table.createTHead().insertRow();
   columns.forEach(([,name])=>{const th=document.createElement('th');th.textContent=name;head.append(th);});
-  const body=table.createTBody();list.forEach(r=>{const row=body.insertRow();row.dataset.date=keyDate(r);row.addEventListener('click',()=>select(keyDate(r)));columns.forEach(([key])=>{const value=r[key];row.insertCell().textContent=key.includes('date')?dateLabel(value):valid(value)?fmt(value,2):value??'—';});});
+  const body=table.createTBody();list.forEach(r=>{const row=body.insertRow();row.dataset.date=keyDate(r);row.addEventListener('click',()=>select(keyDate(r)));columns.forEach(([key])=>{const value=r[key];row.insertCell().textContent=key.includes('date')?dateLabel(value):key==='pace_min_km'?pace(value):valid(value)?fmt(value,2):value??'—';});});
   $('evidence').replaceChildren(table);
-  $('export').onclick=()=>{const csv=[columns.map(([,label])=>label),...list.map(r=>columns.map(([key])=>r[key]??''))].map(row=>row.map(value=>'"'+String(value).replaceAll('"','""')+'"').join(',')).join('\n');const url=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));const link=document.createElement('a');link.href=url;link.download=`garmin-${view}.csv`;link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};
+  $('export').onclick=()=>{const csv=[columns.map(([,label])=>label),...list.map(r=>columns.map(([key])=>key==='pace_min_km'&&valid(r[key])?pace(r[key]):r[key]??''))].map(row=>row.map(value=>'"'+String(value).replaceAll('"','""')+'"').join(',')).join('\n');const url=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));const link=document.createElement('a');link.href=url;link.download=`garmin-${view}.csv`;link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};
 }
 $('filters').addEventListener('submit',event=>{event.preventDefault();load();});
 ['start','end','lag'].forEach(id=>$(id).addEventListener('change',()=>load()));

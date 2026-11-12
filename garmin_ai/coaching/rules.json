@@ -1,0 +1,83 @@
+{
+  "version": 1,
+  "_note": "Defaults. Personal overrides live in the private state repo, not here.",
+  "structure": {
+    "runs": 5,
+    "swims": 3,
+    "bikes_min": 1,
+    "gym_min": 0,
+    "gym_max": 1,
+    "_flex_example": {"count": 1, "sports": ["gym", "bike"], "optional": true,
+                      "prefer": {"default": "gym", "build": "bike", "peak": "bike"}},
+    "_note": "Optional flex: up to `count` extra sessions beyond gym_max / bikes_min, in any of `sports`. optional=true means the athlete decides each week (e.g. skip when tired). prefer picks the sport by season phase (base, build, peak, taper, race_week, recovery; default otherwise). Set it as structure.flex in the profile's rule_overrides."
+  },
+  "ramp": {
+    "rebuild_max_pct": 20,
+    "rebuild_warn_pct": 15,
+    "above_peak_max_pct": 10,
+    "peak_lookback_weeks": 12
+  },
+  "light_week": {
+    "every_weeks": 4,
+    "reduction_pct_min": 15,
+    "compare_weeks": 3,
+    "skip_while_below_peak_pct": 80,
+    "_note": "A week is lighter when it is reduction_pct_min below the highest of the compare_weeks weeks before it, so every low week after a race counts. While rebuilding (planned km below skip_while_below_peak_pct of the 12-week peak) no lighter week is asked for."
+  },
+  "quality": {
+    "max_per_week": 2,
+    "allow_back_to_back": false,
+    "default_hard_fraction": 0.5
+  },
+  "polarization": {
+    "min_easy_share": 0.8
+  },
+  "long_run": {
+    "max_share_of_weekly_km": 0.3,
+    "max_over_longest_30d_km": 2.0
+  },
+  "swim": {
+    "max_midday_minutes": 25,
+    "default_pace_s_per_100m": 120
+  },
+  "readiness": {
+    "min_recent_days": 4,
+    "min_baseline_days": 10,
+    "recent_days": 7,
+    "baseline_days": 21,
+    "hrv_drop_pct": {
+      "yellow": 10,
+      "red": 20
+    },
+    "resting_hr_rise_bpm": {
+      "yellow": 4,
+      "red": 7
+    },
+    "sleep_hours_last3_avg": {
+      "yellow": 6.5,
+      "red": 5.5
+    },
+    "training_readiness_below": {
+      "yellow": 40,
+      "red": 20
+    },
+    "yellow_points": 2,
+    "red_points": 4,
+    "reported_red": [
+      "sick",
+      "pain",
+      "injury"
+    ]
+  },
+  "all_out": {
+    "min_days_between": 28,
+    "note": "Races and all-out time trials need an easy week after and 4+ weeks between. Same-day multi-event races count once."
+  },
+  "phases": {
+    "taper_weeks": 2,
+    "peak_weeks": 4,
+    "build_weeks": 10,
+    "recovery_weeks_after_race": 1,
+    "note": "Weeks before the next A race (counted from this Monday): race_week 0, taper <= taper_weeks, then peak, build, base. Recovery for the week after an A or B race."
+  }
+}

@@ -56,12 +56,33 @@ function groupActivities(list,key,divisor=1){const groups=new Map();list.forEach
 function plot(id,traces,y,height=350,extra={}){const l=layout(y,height);l.showlegend=traces.length>1;l.legend={orientation:'h',y:1.16};l.margin.t=35;l.xaxis.type='date';l.hovermode='x unified';Object.assign(l,extra);if(!traces.some(t=>t.y?.some(valid)))l.annotations=[{text:'No recorded data for this view.',xref:'paper',yref:'paper',x:.5,y:.5,showarrow:false,font:{color:muted}}];return Plotly.react(id,traces,l,{...config,displayModeBar:'hover',modeBarButtonsToRemove:['select2d','lasso2d']});}
 async function refreshDashboard(){
   if(!data)return;const request=++dashboardRequest;$('dashboard-status').textContent='Loading dashboard…';
-  try{const response=await fetch('/api/dashboard?'+new URLSearchParams({start:$('start').value,end:$('end').value}));if(!response.ok)throw new Error('Could not load dashboard history.');const result=await response.json();if(request!==dashboardRequest)return;dashboard=result;$('dashboard-status').textContent='';const state=result.sync_state;$('sync-note').textContent=state.last_synced_at?`Last sync ${dateLabel(state.last_synced_at)}`:'Not synced yet';renderPage();}
+  try{const response=await fetch('/api/dashboard?'+new URLSearchParams({start:$('start').value,end:$('end').value}));if(!response.ok)throw new Error('Could not load dashboard history.');const result=await response.json();if(request!==dashboardRequest)return;dashboard=result;applyHosted(result.hosted);$('dashboard-status').textContent='';const state=result.sync_state;$('sync-note').textContent=state.last_synced_at?`Last sync ${dateLabel(state.last_synced_at)}`:'Not synced yet';renderPage();}
   catch(error){if(request===dashboardRequest)$('dashboard-status').textContent=error.message;}
 }
 function navigate(){activePage=pages.includes(location.hash.slice(1))?location.hash.slice(1):'overview';pages.forEach(page=>$(page+'-page').hidden=page!==activePage);document.querySelectorAll('.main-nav a').forEach(a=>{const current=a.hash==='#'+activePage;a.classList.toggle('active',current);if(current)a.setAttribute('aria-current','page');else a.removeAttribute('aria-current');});$('page-title').textContent=titles[activePage];renderPage();}
 function renderPage(){document.body.dataset.page=activePage;if(activePage==='connections'){loadConnections();return;}if(activePage==='discoveries'){if(data)render();return;}if(!dashboard)return;({overview:renderOverview,trends:renderTrends,training:renderTraining,calendar:renderCalendar,activities:renderActivities,ai:renderAI})[activePage]?.();}
+const verdictLabel={'on track':'On track',watch:'Watch',act:'Act'};
+function renderWeekCard(){
+  const box=$('week-card'),r=dashboard.weekly_review;box.hidden=!r;if(!r)return;
+  const d=r.done||{},pl=r.planned||{},n=r.next_week,ready=r.readiness||{},v=r.verdict;
+  const km=x=>valid(x)?`${fmt(x,x%1?1:0)} km`:'—';
+  const of=(done,planned)=>valid(planned)&&planned>0?`${done??0} / ${planned}`:`${done??0}`;
+  const dot=s=>`<span class="ready-dot ${esc(s)}"></span>${esc(s||'unknown')}`;
+  const flags=(r.flags||[]).filter(f=>f.level!=='ok');
+  const tiles=[['Runs',of(d.runs,pl.runs)],['Run km',valid(pl.run_km||pl.target_run_km)?`${fmt(d.run_km,0)} / ${fmt(pl.run_km||pl.target_run_km,0)}`:km(d.run_km)],
+    ['Swims',of(d.swims,pl.swims)],['Done',valid(pl.completion_pct)?`${pl.completion_pct}%`:`${pl.completed??0} of ${pl.sessions??0}`]];
+  const next=n?`<div class="week-next"><h3>Next week <span class="muted small">${esc(n.phase)}${n.light?' · lighter':''}</span></h3>
+    <p><strong>${km(n.run_km)}</strong> run${n.long_run_km?` · long run <strong>${km(n.long_run_km)}</strong>`:''}${n.swims?` · <strong>${n.swims}</strong> swims`:''}</p>
+    ${(n.quality||[]).length?`<ul class="week-quality">${n.quality.map(q=>`<li>${esc(q)}</li>`).join('')}</ul>`:''}
+    ${n.note?`<p class="muted small">${esc(n.note)}</p>`:''}</div>`:'';
+  box.innerHTML=`<div class="week-head"><div><h2>This week</h2><p class="muted small">Week of ${esc(dateLabel(r.week_start))}${r.phase?` · ${esc(r.phase)} phase`:''}</p></div>
+    <span class="verdict ${v?esc(v.replace(' ','-')):'none'}">${esc(verdictLabel[v]||'No season plan')}</span></div>
+    ${flags.length?`<ul class="week-flags">${flags.map(f=>`<li class="${esc(f.level)}"><b>${esc(f.level)}</b> ${esc(f.message)}</li>`).join('')}</ul>`:v?'<p class="muted small">No flags this week.</p>':''}
+    <div class="week-tiles">${tiles.map(([l,x])=>`<div><span>${l}</span><strong>${esc(x)}</strong></div>`).join('')}</div>
+    <p class="small week-ready">Readiness ${dot(ready.start)} → ${dot(ready.end)}</p>${next}`;
+}
 function renderOverview(){
+  renderWeekCard();
   const m=dashboard.insights.metrics.current,p=dashboard.insights.metrics.previous,list=acts();
   const delta=(key,unit='',digits=1)=>valid(m[key])&&valid(p[key])?`${m[key]-p[key]>=0?'+':''}${fmt(m[key]-p[key],digits)}${unit} vs previous period`:'No previous comparison';
   metricCards('overview-metrics',[
@@ -252,7 +273,7 @@ function renderActivity(){
   const moving=valid(r.moving_duration_s)&&r.moving_duration_s>0?r.moving_duration_s:r.duration_s;
   $('activity-detail').innerHTML=`<h2>${esc(r.name||r.type)}</h2><p class="muted">${esc(dateLabel(r.start_time))} · ${esc(r.location||r.category)}</p><div id="activity-metrics" class="metric-strip"></div><div class="splits"><h3>Splits</h3><div id="splits-body" class="table-scroll muted">Loading splits…</div><div id="splits-chart" class="medium-chart" hidden></div></div><details id="raw-details"><summary>Raw Garmin activity payload</summary><pre id="raw-payload">Open to load.</pre></details>`;
   $('raw-details').ontoggle=async()=>{if(!$('raw-details').open)return;$('raw-payload').textContent='Loading…';try{const res=await fetch('/api/activity-raw?id='+encodeURIComponent(r.activity_id));if(!res.ok)throw new Error('Could not load the stored payload.');$('raw-payload').textContent=JSON.stringify(await res.json(),null,2);}catch(e){$('raw-payload').textContent=e.message;}};
-  metricCards('activity-metrics',[['Distance',fmt(valid(r.distance_m)?r.distance_m/1000:null,2)+' km'],['Moving time',valid(moving)?finishTime(moving):'—'],['Pace',r.distance_m>0&&valid(moving)?pace(moving/60/(r.distance_m/1000))+' /km':'—'],['Average HR',fmt(r.avg_hr,0)+' bpm'],['Max HR',fmt(r.max_hr,0)+' bpm'],['Climbing',fmt(r.elevation_gain_m,0)+' m'],['Garmin load',fmt(r.training_load,0)],['Aerobic effect',fmt(r.aerobic_te)],['Anaerobic effect',fmt(r.anaerobic_te)],['Power',fmt(r.avg_power,0)+' W'],['Calories',fmt(r.calories,0)]]);
+  metricCards('activity-metrics',[['Distance',fmt(valid(r.distance_m)?r.distance_m/1000:null,2)+' km'],['Moving time',valid(moving)?finishTime(moving):'—'],[r.category==='Cycling'?'Speed':'Pace',actPaceText(r)],['Average HR',fmt(r.avg_hr,0)+' bpm'],['Max HR',fmt(r.max_hr,0)+' bpm'],['Climbing',fmt(r.elevation_gain_m,0)+' m'],['Garmin load',fmt(r.training_load,0)],['Aerobic effect',fmt(r.aerobic_te)],['Anaerobic effect',fmt(r.anaerobic_te)],['Power',fmt(r.avg_power,0)+' W'],['Calories',fmt(r.calories,0)]]);
   loadSplits(r);
   const l=layout('Minutes',260);l.xaxis.type='category';const zones=(r.hr_zones||[]).map(x=>valid(x)?x/60:null);if(!zones.some(valid))l.annotations=[{text:'No heart-rate zone data for this activity.',xref:'paper',yref:'paper',x:.5,y:.5,showarrow:false,font:{color:muted}}];Plotly.react('activity-zones',[{type:'bar',x:['Z1','Z2','Z3','Z4','Z5'],y:zones,marker:{color:[green,blue,'#fbbf24','#fb923c','#c4a5ff']}}],l,config);
 }
@@ -343,18 +364,26 @@ $('context-form').oninput=()=>{$('context-form').dataset.dirty='true';};$('conte
 $('chat-form').onsubmit=event=>{event.preventDefault();sendChat($('chat-input').value);};$('ai-summary').onclick=()=>sendChat('Summarize the most important evidence in this selected period, in the context of my goal.');$('ai-clear').onclick=()=>{if(!chatBusy){chatMessages=[];renderMessages();}};
 // Connections page: Garmin sign-in, AI provider (Claude/Codex CLI) and auto-sync settings.
 let connections=null,garminMfa=false,cliLoginTimer=null,connectionsRequest=0,connectionsLoading=false;
-const providerNotes={claude:'Uses your Claude Pro or Max subscription.',codex:'Uses your ChatGPT Plus, Pro or Business plan.'};
+const providerNotes={claude:'Uses your Claude Pro or Max subscription.',codex:'Uses your ChatGPT Plus, Pro or Business plan.',api:'Pay per use with an Anthropic API key; works on a hosted server.'};
 const installHelp={claude:'Install Claude Code from claude.com/claude-code',codex:'Install with npm install -g @openai/codex'};
+// Hosted mode runs on the user's server with the Claude API, so local-only wording and links change.
+let hosted=false;
+function applyHosted(value){
+  hosted=!!value;if(!hosted)return;
+  $('legacy-link').hidden=true;$('footer-title').textContent='GARMIN HISTORY';
+  $('footer-note').textContent='Stored on your server · AI requests use the Claude API';
+  $('ai-subtitle').textContent='Uses the Claude API key set on the server';
+}
 function badge(id,text,state){const el=$(id);el.textContent=text;el.dataset.state=state;}
 async function loadConnections(force=false){if(connectionsLoading&&!force)return;connectionsLoading=true;const request=++connectionsRequest;try{const response=await fetch('/api/connections');if(response.status===404)throw new Error('The running server is an older version. Restart it (python -m garmin_ai.web_server) to use this page.');if(!response.ok)throw new Error('Could not check connections.');const result=await response.json();if(request!==connectionsRequest)return;connections=result;renderConnections();}catch(error){badge('garmin-badge','Unavailable','off');badge('ai-badge','Unavailable','off');$('ai-result').textContent=error.message;}finally{if(request===connectionsRequest)connectionsLoading=false;}}
-function renderConnections(){renderGarmin();renderSyncSettings();renderAiProviders();}
+function renderConnections(){applyHosted(connections.hosted);if(connections.hosted){document.querySelector('.connections-intro').textContent='This dashboard runs on your own server. Garmin keeps only a sign-in token (your password is never saved), and the AI coach uses the Claude API key set on the server.';$('signout-form').hidden=false;}renderGarmin();renderSyncSettings();renderAiProviders();}
 function renderGarmin(){
   const g=connections.garmin,body=$('garmin-body');garminMfa=garminMfa||g.awaiting_mfa;
   if(g.connected&&!garminMfa){
     badge('garmin-badge','Connected','on');
     body.innerHTML=`<dl class="conn-facts"><dt>Account</dt><dd>${esc(g.display_name||g.email||'Signed in')}</dd>${g.display_name&&g.email?`<dt>Email</dt><dd>${esc(g.email)}</dd>`:''}<dt>Last sync</dt><dd>${g.last_synced_at?`${esc(syncedLabel(g.last_synced_at))}`:'Not synced yet'}</dd></dl><div class="conn-footer"><button class="primary icon-button" id="garmin-sync"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 0 0-14.9-3M4 13a8 8 0 0 0 14.9 3"/><path d="M4 4v4h4M20 20v-4h-4"/></svg><span>Sync now</span></button><span class="conn-footer-note" id="garmin-sync-note">Fetches the last ${Number($('sync-days').value)||7} days</span><button class="ghost-danger icon-button" id="garmin-logout"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3M10 17l-5-5 5-5M5 12h11"/></svg><span>Sign out</span></button></div>`;
     $('garmin-sync').onclick=()=>syncFromCard();
-    $('garmin-logout').onclick=async()=>{if(!confirm('Sign out of Garmin? Your synced history stays on this computer.'))return;try{connections=await post('/api/connections/garmin-logout',{});$('garmin-result').textContent='Signed out.';renderConnections();}catch(e){$('garmin-result').textContent=e.message;}};
+    $('garmin-logout').onclick=async()=>{if(!confirm(`Sign out of Garmin? Your synced history stays ${hosted?'on your server':'on this computer'}.`))return;try{connections=await post('/api/connections/garmin-logout',{});$('garmin-result').textContent='Signed out.';renderConnections();}catch(e){$('garmin-result').textContent=e.message;}};
     return;
   }
   if(garminMfa){
@@ -393,8 +422,8 @@ function renderAiProviders(){
   const ready=active?.installed&&active.logged_in;
   badge('ai-badge',ready?'Connected':active?.installed?'Sign-in needed':'Not set up',ready?'on':active?.installed?'pending':'off');
   $('provider-options').innerHTML=Object.entries(ai.providers).map(([key,p])=>{
-    const state=!p.installed?`<span class="muted">Not installed · ${esc(installHelp[key])}</span>`:p.logged_in?`<span class="ok">✓ Signed in</span>${p.account?` · ${esc(p.account)}`:''}`:p.signing_in?'<span class="pending">Waiting for you to finish signing in in your browser…</span>':'<span class="pending">Not signed in</span>';
-    const action=p.installed&&!p.logged_in?`<button type="button" data-cli-login="${key}" ${p.signing_in?'disabled':''}>${p.signing_in?'Signing in…':'Sign in'}</button>`:'';
+    const state=key==='api'&&!p.logged_in?'<span class="pending">Set ANTHROPIC_API_KEY on the server</span>':!p.installed?`<span class="muted">Not installed · ${esc(installHelp[key])}</span>`:p.logged_in?`<span class="ok">✓ Signed in</span>${p.account?` · ${esc(p.account)}`:''}`:p.signing_in?'<span class="pending">Waiting for you to finish signing in in your browser…</span>':'<span class="pending">Not signed in</span>';
+    const action=key!=='api'&&p.installed&&!p.logged_in?`<button type="button" data-cli-login="${key}" ${p.signing_in?'disabled':''}>${p.signing_in?'Signing in…':'Sign in'}</button>`:'';
     return `<label class="provider${key===chosen?' selected':''}"><input type="radio" name="ai-provider" value="${key}" aria-label="${esc(p.label)}" ${key===chosen?'checked':''}><span class="provider-text"><strong>${esc(p.label)}${key===ai.provider?' <span class="muted small">· in use</span>':''}</strong><span class="small muted">${esc(providerNotes[key])}${p.version?' · '+esc(p.version):''}</span><span class="small">${state}</span></span>${action}</label>`;
   }).join('');
   $('provider-options').querySelectorAll('input').forEach(input=>input.onchange=()=>{$('provider-options').dataset.choice=input.value;renderAiProviders();});

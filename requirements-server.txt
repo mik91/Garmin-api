@@ -1,0 +1,12 @@
+# Dependencies for the hosted server (the Streamlit legacy dashboard is left out).
+garminconnect==0.3.6
+curl_cffi
+pandas
+plotly
+python-dotenv
+mcp>=1.10,<2
+garmin-connect-personal-api-python>=1,<2
+starlette>=0.40
+uvicorn>=0.30
+anthropic>=0.116
+tzdata  # time zones for GARMIN_TIMEZONE in the slim image

@@ -308,12 +308,14 @@ td.link,td .month-link,.month-link{color:var(--link);font-weight:600;cursor:poin
 .insight-list article{background:var(--panel2)}
 @media(max-width:900px){
   .shell{display:block}
-  .appbar{position:sticky;flex-wrap:wrap;height:auto;padding:8px 12px;gap:8px}
+  /* The header scrolls away so the page menu below it can stay pinned to the top. */
+  .appbar{position:static;flex-wrap:wrap;height:auto;padding:8px 12px;gap:8px}
   .search{order:3;flex:1 1 100%;margin:0;height:38px}.appbar .sync-head{display:none}
   .sidebar{position:sticky;top:0;z-index:15;width:auto;height:auto;flex-direction:row;padding:6px 8px;border-right:0;border-bottom:1px solid var(--line);overflow-x:auto}
-  .main-nav{flex-direction:row;margin:0}.main-nav a{width:52px;flex:none;height:44px}.main-nav a::after{display:none}
-  .sidebar .back{margin:0 0 0 auto}
+  .main-nav{flex-direction:row;margin:0;gap:4px}.main-nav a{flex:1 1 0;min-width:40px;height:44px}.main-nav a::after{display:none}
+  .sidebar .back{display:none}
   .topbar{position:static}main{padding:16px 12px}
+  .app-toolbar{gap:10px}.period{flex-wrap:wrap;gap:8px}.period input[type=date]{width:150px}
   .zbar{width:110px}
 }
 
@@ -348,3 +350,19 @@ body[data-page=connections] .app-toolbar{display:none}
 .provider button{flex:none;align-self:center}
 .ok{color:var(--accent)}.pending{color:var(--amber)}
 @media(max-width:900px){.connection-grid,.provider-options{grid-template-columns:1fr}.conn-form.stacked{grid-template-columns:1fr}#ai-model{width:100%}}
+/* "This week": the automatic weekly coaching review */
+.week-card .week-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}.week-card h2{margin:0}.week-card .week-head p{margin:2px 0 0}
+.verdict{flex:none;padding:5px 12px;border-radius:999px;font-weight:700;font-size:14px;border:1px solid var(--line2);color:var(--muted)}
+.verdict.on-track{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
+.verdict.watch{background:rgba(251,191,36,.12);border-color:var(--amber);color:var(--amber)}
+.verdict.act{background:rgba(248,113,113,.14);border-color:#f87171;color:#f87171}
+.week-flags{list-style:none;margin:12px 0 0;padding:0;display:grid;gap:6px}
+.week-flags li{font-size:14px;padding:8px 10px;border-radius:8px;background:var(--panel2);border-left:3px solid var(--amber)}
+.week-flags li.act{border-left-color:#f87171}.week-flags b{text-transform:uppercase;font-size:11px;letter-spacing:.06em;margin-right:6px;color:var(--amber)}.week-flags li.act b{color:#f87171}
+.week-tiles{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:14px 0 0}
+.week-tiles div{background:var(--panel2);border-radius:8px;padding:10px}.week-tiles span{display:block;font-size:12px;color:var(--muted)}.week-tiles strong{font-size:18px}
+.week-ready{margin:12px 0 0;color:var(--muted)}.ready-dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin:0 5px 0 4px;background:var(--line2)}
+.ready-dot.green{background:var(--accent)}.ready-dot.yellow{background:var(--amber)}.ready-dot.red{background:#f87171}
+.week-next{margin-top:14px;padding-top:12px;border-top:1px solid var(--line)}.week-next h3{margin:0 0 4px;font-size:16px}.week-next p{margin:4px 0}
+.week-quality{margin:6px 0 0;padding-left:18px;font-size:14px;color:#c3ccd9}
+@media(max-width:600px){.week-tiles{grid-template-columns:repeat(2,minmax(0,1fr))}}

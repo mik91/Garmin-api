@@ -40,7 +40,11 @@ SYSTEM_PROMPT = (
 )
 
 
-PROVIDERS = {"claude": "Claude Code CLI", "codex": "Codex CLI"}
+PROVIDERS = {"claude": "Claude Code CLI", "codex": "Codex CLI", "api": "Claude API"}
+CLI_PROVIDERS = ("claude", "codex")
+# Used with the API provider when AI_MODEL is empty.
+DEFAULT_API_MODEL = "claude-opus-5-5"
+API_FALLBACK_MODEL = "claude-opus-4-8"
 # Older .env files used API provider names; map them onto the matching CLI.
 PROVIDER_ALIASES = {"anthropic": "claude", "openai": "codex"}
 # Keys that would make the CLIs bill an API account instead of the user's subscription.
@@ -56,11 +60,13 @@ def provider_name() -> str:
     if provider in PROVIDERS:
         return provider
     raise AIProviderError(
-        f"Unsupported AI_PROVIDER '{config.AI_PROVIDER}'. Use 'claude' or 'codex'."
+        f"Unsupported AI_PROVIDER '{config.AI_PROVIDER}'. Use 'claude', 'codex' or 'api'."
     )
 
 
 def configured_model() -> str:
+    if provider_name() == "api":
+        return config.AI_MODEL or DEFAULT_API_MODEL
     return config.AI_MODEL or "default"
 
 
@@ -73,11 +79,15 @@ def _cli_path() -> str | None:
 
 
 def is_configured() -> bool:
+    if provider_name() == "api":
+        return bool(os.environ.get("ANTHROPIC_API_KEY"))
     return _cli_path() is not None
 
 
 def missing_config_message() -> str:
     provider = provider_name()
+    if provider == "api":
+        return "Set ANTHROPIC_API_KEY (from console.anthropic.com) to use the Claude API."
     if provider == "claude":
         return "Install Claude Code and run `claude` once to sign in, or set CLAUDE_CLI in .env."
     return "Install the Codex CLI and run `codex login`, or set CODEX_CLI in .env."
@@ -154,8 +164,57 @@ def _codex_message(content: str) -> str:
     return result.stdout.strip()
 
 
+def _api_message(messages: list[dict]) -> str:
+    """Claude API call. The system prompt and the first user block (the data context)
+    are cached, so follow-up chat turns about the same range reuse them cheaply."""
+    import anthropic
+
+    if not is_configured():
+        raise AIProviderError(missing_config_message())
+    client = anthropic.Anthropic(timeout=config.AI_CLI_TIMEOUT_S)
+    try:
+        response = client.beta.messages.create(
+            model=configured_model(),
+            max_tokens=16000,
+            system=[{"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}],
+            messages=messages,
+            output_config={"effort": "medium"},
+            betas=["server-side-fallback-2026-06-01"],
+            fallbacks=[{"model": API_FALLBACK_MODEL}],
+        )
+    except anthropic.AuthenticationError as error:
+        raise AIProviderError("The Claude API key was rejected. Check ANTHROPIC_API_KEY.") from error
+    except anthropic.RateLimitError as error:
+        raise AIProviderError("The Claude API is rate limiting requests. Try again in a minute.") from error
+    except anthropic.BadRequestError as error:
+        raise AIProviderError(f"The Claude API rejected the request: {error.message}") from error
+    except anthropic.APIStatusError as error:
+        raise AIProviderError(f"The Claude API returned an error ({error.status_code}). Try again later.") from error
+    except anthropic.APIConnectionError as error:
+        raise AIProviderError("Could not reach the Claude API.") from error
+    if response.stop_reason == "refusal":
+        raise AIProviderError("Claude declined to answer this request.")
+    text = "".join(block.text for block in response.content if block.type == "text").strip()
+    if response.stop_reason == "max_tokens":
+        text += "\n\n(The answer was cut off because it reached the length limit.)"
+    return text
+
+
+def _context_messages(context: str, turns: list[dict]) -> list[dict]:
+    """First user turn carries the cached data context, then the conversation as-is."""
+    first, *rest = turns
+    opening = {"role": "user", "content": [
+        {"type": "text", "text": context, "cache_control": {"type": "ephemeral"}},
+        {"type": "text", "text": first["content"]},
+    ]}
+    return [opening, *({"role": t["role"], "content": t["content"]} for t in rest)]
+
+
 def _message(content: str) -> str:
-    if provider_name() == "codex":
+    provider = provider_name()
+    if provider == "api":
+        return _api_message([{"role": "user", "content": content}])
+    if provider == "codex":
         return _codex_message(content)
     return _claude_message(content)
 
@@ -182,6 +241,12 @@ def ask(summary: dict, question: str) -> str:
 
 
 def chat(summary: dict, messages: list[dict]) -> str:
+    if provider_name() == "api":
+        turns = [m for m in messages if m.get("content")]
+        if not turns or turns[0]["role"] != "user":
+            raise AIProviderError("The conversation must start with a question.")
+        context = "My Garmin dashboard context as JSON:\n\n" + json.dumps(summary, indent=2, default=str, sort_keys=True)
+        return _api_message(_context_messages(context, turns))
     transcript = "\n".join(
         f"{message['role'].title()}: {message['content']}"
         for message in messages

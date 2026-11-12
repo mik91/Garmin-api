@@ -68,3 +68,76 @@ def test_missing_cli_is_not_configured(monkeypatch):
     monkeypatch.setattr(config, "AI_PROVIDER", "claude")
     monkeypatch.setattr(ai_insights.shutil, "which", lambda name: None)
     assert not ai_insights.is_configured()
+
+
+class _FakeBlock:
+    def __init__(self, text):
+        self.type, self.text = "text", text
+
+
+class _FakeResponse:
+    def __init__(self, stop_reason="end_turn", text="api answer"):
+        self.stop_reason, self.content = stop_reason, [_FakeBlock(text)]
+
+
+@pytest.fixture
+def fake_api(monkeypatch):
+    import anthropic
+
+    calls, responses = [], []
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.beta = self
+            self.messages = self
+
+        def create(self, **kwargs):
+            calls.append(kwargs)
+            return responses.pop(0) if responses else _FakeResponse()
+
+    monkeypatch.setattr(anthropic, "Anthropic", FakeClient)
+    monkeypatch.setattr(config, "AI_PROVIDER", "api")
+    monkeypatch.setattr(config, "AI_MODEL", "")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    return calls, responses
+
+
+def test_api_chat_caches_system_and_data_context(fake_api):
+    calls, _ = fake_api
+    answer = ai_insights.chat({"hrv": 50}, [
+        {"role": "user", "content": "How is my recovery?"},
+        {"role": "assistant", "content": "Fine."},
+        {"role": "user", "content": "And sleep?"},
+    ])
+    assert answer == "api answer"
+    request = calls[0]
+    assert request["model"] == "claude-opus-5-5"
+    assert request["system"][0]["cache_control"] == {"type": "ephemeral"}
+    assert request["fallbacks"] == [{"model": "claude-opus-4-8"}]
+    opening = request["messages"][0]["content"]
+    assert '"hrv": 50' in opening[0]["text"] and opening[0]["cache_control"] == {"type": "ephemeral"}
+    assert opening[1]["text"] == "How is my recovery?"
+    assert [m["role"] for m in request["messages"]] == ["user", "assistant", "user"]
+
+
+def test_api_refusal_and_missing_key_are_reported(fake_api, monkeypatch):
+    _, responses = fake_api
+    responses.append(_FakeResponse(stop_reason="refusal", text=""))
+    with pytest.raises(ai_insights.AIProviderError, match="declined"):
+        ai_insights.ping()
+    monkeypatch.delenv("ANTHROPIC_API_KEY")
+    assert not ai_insights.is_configured()
+    with pytest.raises(ai_insights.AIProviderError, match="ANTHROPIC_API_KEY"):
+        ai_insights.ping()
+
+
+def test_hosted_connections_offer_only_the_api(monkeypatch):
+    from garmin_ai import connections
+
+    monkeypatch.setattr(config, "HOSTED", True)
+    monkeypatch.setattr(config, "AI_PROVIDER", "api")
+    assert list(connections.ai_status()["providers"]) == ["api"]
+    with pytest.raises(ValueError):
+        connections.save_ai({"provider": "claude", "model": ""})
+    with pytest.raises(ValueError):
+        connections.cli_login({"provider": "claude"})

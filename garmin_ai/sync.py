@@ -4,10 +4,12 @@ import time
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 
-from garminconnect import Garmin
+from garminconnect import Garmin, GarminConnectAuthenticationError, GarminConnectTooManyRequestsError
 
 from garmin_ai import calendar as training_calendar
-from garmin_ai import config, db
+from garmin_ai import config, db, hevy
+
+NO_RETRY = (GarminConnectAuthenticationError, GarminConnectTooManyRequestsError)
 
 
 @contextmanager
@@ -93,6 +95,9 @@ def _with_retry(fn, *args, retries=3, backoff=5, **kwargs):
     for attempt in range(retries):
         try:
             return fn(*args, **kwargs)
+        except NO_RETRY:
+            # Retrying cannot fix a rejected sign-in, and only deepens a rate limit.
+            raise
         except Exception:
             if attempt == retries - 1:
                 raise
@@ -288,7 +293,7 @@ def _sync_race_predictions(client: Garmin, conn, end: date):
 
 
 def sync(days: int = 7, reuse_today: bool = False, prompt_mfa=None):
-    """Pull the last `days` days of data."""
+    """Pull the last `days` days of Garmin data, then the Hevy log when it is configured."""
     with _sync_guard():
         today = date.today()
         start = today - timedelta(days=days - 1)
@@ -298,30 +303,85 @@ def sync(days: int = 7, reuse_today: bool = False, prompt_mfa=None):
                 if _today_sync_covers(conn, days, today):
                     return start, today
 
-        client = login(prompt_mfa=prompt_mfa) if prompt_mfa is not None else login()
-        with db.get_connection() as conn:
-            _sync_activities(client, conn, start, today)
-
-            day = start
-            while day <= today:
-                sleep_data = _sync_sleep(client, conn, day)
-                _sync_daily_stats(client, conn, day, sleep_data)
-                _sync_body_composition(client, conn, day)
-                day += timedelta(days=1)
-
-            calendar_start = min(start, today - timedelta(days=14))
-            calendar_end = today + timedelta(days=42)
-            try:
-                _sync_scheduled_workouts(client, conn, calendar_start, calendar_end)
-            except Exception as error:
-                db.set_sync_state(conn, "scheduled_workouts_error", friendly_error(error))
-            try:
-                _sync_race_predictions(client, conn, today)
-            except Exception as error:
-                db.set_sync_state(conn, "race_predictions_error", friendly_error(error))
-
-            db.set_last_synced_date(conn, today.isoformat())
-            db.set_sync_state(conn, "last_synced_at", datetime.now().isoformat(timespec="seconds"))
-            db.set_sync_state(conn, "last_sync_days", str(days))
+        try:
+            _sync_garmin(days, start, today, prompt_mfa)
+        finally:
+            # Runs after Garmin so new strength activities can be linked; records its own errors.
+            hevy.sync_if_configured()
 
     return start, today
+
+
+DETAIL_SPORTS = ("running", "swimming", "cycling")
+DETAILS_PER_SYNC = 20  # new activities first, then older ones, so history fills in over a few syncs
+DETAIL_PAUSE_S = 1.0
+
+
+def _sync_activity_details(client: Garmin, conn, limit: int = DETAILS_PER_SYNC, pause: float = DETAIL_PAUSE_S) -> int:
+    """Laps (splits_json) and weather (weather_json) for runs, swims and rides that lack them,
+    newest first. A failed call leaves the column empty so a later sync retries it; Garmin
+    having no data (e.g. weather for a treadmill run) is stored as {} so it is not asked again."""
+    sport = " OR ".join("type LIKE ?" for _ in DETAIL_SPORTS)
+    rows = conn.execute(
+        f"SELECT activity_id, splits_json, weather_json FROM activities WHERE ({sport}) "
+        "AND (splits_json IS NULL OR weather_json IS NULL) ORDER BY start_time DESC LIMIT ?",
+        (*(f"%{s}%" for s in DETAIL_SPORTS), limit)).fetchall()
+    fetched = 0
+    for activity_id, splits, weather in rows:
+        updates = {}
+        for column, missing, fetch in (("splits_json", splits is None, client.get_activity_splits),
+                                       ("weather_json", weather is None, client.get_activity_weather)):
+            if not missing:
+                continue
+            try:
+                data = fetch(activity_id)
+            except NO_RETRY:
+                raise  # a rejected sign-in or a rate limit: stop, the next sync carries on
+            except Exception:
+                continue  # left empty, so a later sync retries it
+            updates[column] = db.dumps(data or {})
+        if updates:
+            conn.execute(f"UPDATE activities SET {', '.join(f'{k} = ?' for k in updates)} WHERE activity_id = ?",
+                         (*updates.values(), activity_id))
+            fetched += 1
+        if pause:
+            time.sleep(pause)
+    return fetched
+
+
+def _sync_garmin(days: int, start: date, today: date, prompt_mfa=None):
+    client = login(prompt_mfa=prompt_mfa) if prompt_mfa is not None else login()
+    with db.get_connection() as conn:
+        _sync_activities(client, conn, start, today)
+        conn.commit()
+
+        day = start
+        while day <= today:
+            sleep_data = _sync_sleep(client, conn, day)
+            _sync_daily_stats(client, conn, day, sleep_data)
+            _sync_body_composition(client, conn, day)
+            # Commit per day, so a failure late in a long sync keeps what was fetched
+            # and the write lock is never held for the whole sync.
+            conn.commit()
+            day += timedelta(days=1)
+
+        calendar_start = min(start, today - timedelta(days=14))
+        calendar_end = today + timedelta(days=42)
+        try:
+            _sync_scheduled_workouts(client, conn, calendar_start, calendar_end)
+        except Exception as error:
+            db.set_sync_state(conn, "scheduled_workouts_error", friendly_error(error))
+        try:
+            _sync_race_predictions(client, conn, today)
+        except Exception as error:
+            db.set_sync_state(conn, "race_predictions_error", friendly_error(error))
+        try:
+            _sync_activity_details(client, conn)
+            conn.commit()
+        except Exception as error:  # laps and weather are extras: never fail the sync for them
+            db.set_sync_state(conn, "activity_details_error", friendly_error(error))
+
+        db.set_last_synced_date(conn, today.isoformat())
+        db.set_sync_state(conn, "last_synced_at", datetime.now().isoformat(timespec="seconds"))
+        db.set_sync_state(conn, "last_sync_days", str(days))
+

@@ -37,7 +37,8 @@ def scheduled_items(payload) -> list[dict]:
             value.get("workoutScheduleId") is not None
             or value.get("scheduleId") is not None
             or isinstance(value.get("workout"), dict)
-        ):
+        ) or (value.get("itemType") == "workout" and value.get("date")):
+            # The calendar endpoint now returns {"itemType": "workout", "date", "id", "title"}.
             found.append(value)
             return
         for child in value.values():
@@ -54,13 +55,15 @@ def normalize_scheduled_workout(item: dict, seen_at: str) -> dict:
     if workout_id is None:
         workout_id = _first(workout, "workoutId", "id")
     schedule_id = _first(item, "workoutScheduleId", "scheduleId", "scheduledWorkoutId")
+    if schedule_id is None and item.get("itemType") == "workout":
+        schedule_id = item.get("id")  # calendar items: id is the schedule id
     if schedule_id is None:
         digest = hashlib.sha1(
             json.dumps(item, sort_keys=True, default=str).encode("utf-8")
         ).hexdigest()[:16]
         schedule_id = f"calendar:{digest}"
 
-    sport_value = _first(item, "sportType", "sport", "activityType")
+    sport_value = _first(item, "sportType", "sportTypeKey", "sport", "activityType")
     if sport_value is None:
         sport_value = _first(workout, "sportType", "sport", "activityType")
     if isinstance(sport_value, dict):
@@ -71,8 +74,8 @@ def normalize_scheduled_workout(item: dict, seen_at: str) -> dict:
     return {
         "scheduled_workout_id": str(schedule_id),
         "workout_id": str(workout_id) if workout_id is not None else None,
-        "date": str(item.get("calendarDate"))[:10],
-        "name": _first(item, "newName", "workoutName", "name")
+        "date": str(_first(item, "calendarDate", "date"))[:10],
+        "name": _first(item, "newName", "workoutName", "title", "name")
         or _first(workout, "workoutName", "name")
         or "Planned workout",
         "sport": str(sport_value) if sport_value is not None else None,
@@ -122,6 +125,49 @@ def match_score(planned: pd.Series | dict, activity: pd.Series | dict) -> float:
     return sum(value * weight for value, weight in weighted) / total_weight
 
 
+def _title(value) -> str:
+    return " ".join(str(value or "").lower().split())
+
+
+def _activity_names(activities: pd.DataFrame) -> pd.Series:
+    if "name" in activities.columns:
+        return activities["name"].map(_title)
+    if "raw_json" in activities.columns:
+        def name(raw):
+            try:
+                return _title(json.loads(raw or "{}").get("activityName"))
+            except (TypeError, ValueError):
+                return ""
+        return activities["raw_json"].map(name)
+    return pd.Series("", index=activities.index)
+
+
+def _title_matches(scheduled: pd.DataFrame, activities: pd.DataFrame) -> dict[str, object]:
+    """schedule id -> activity, when the activity's name contains the planned workout's name on
+    the same day (the watch names an activity after the workout it ran, e.g. "Montreal - [CP]
+    Easy 47min + strides"). The longest matching name wins, so "Easy Run #2" beats "Easy Run"."""
+    if activities.empty:
+        return {}
+    names = _activity_names(activities)
+    pairs = []
+    for _, planned in scheduled.iterrows():
+        if pd.notna(planned.get("associated_activity_id")):
+            continue
+        title = _title(planned.get("name"))
+        if len(title) < 6:
+            continue
+        day = pd.to_datetime(planned["date"]).date()
+        for index in activities.index[activities["activity_date"] == day]:
+            if title in names[index]:
+                pairs.append((len(title), str(planned["scheduled_workout_id"]), index))
+    matches, taken = {}, set()
+    for _, schedule_id, index in sorted(pairs, reverse=True):
+        if schedule_id not in matches and index not in taken:
+            matches[schedule_id] = activities.loc[index]
+            taken.add(index)
+    return matches
+
+
 def build_adherence(
     scheduled: pd.DataFrame,
     activities: pd.DataFrame,
@@ -146,6 +192,8 @@ def build_adherence(
 
     results = []
     used_activity_ids = set()
+    titled = _title_matches(scheduled, activities)
+    reserved = {row["activity_id"] for row in titled.values()}
     for _, planned in scheduled.sort_values("date").iterrows():
         schedule_id = str(planned["scheduled_workout_id"])
         planned_date = pd.to_datetime(planned["date"]).date()
@@ -163,10 +211,13 @@ def build_adherence(
                 if not direct.empty:
                     matched = direct.iloc[0]
 
+        if matched is None and score is None and schedule_id in titled:
+            matched, score = titled[schedule_id], 1.0
         if matched is None and score is None and not activities.empty:
             candidates = activities[
                 (activities["activity_date"] == planned_date)
                 & (~activities["activity_id"].isin(used_activity_ids))
+                & (~activities["activity_id"].isin(reserved))
             ]
             if not candidates.empty:
                 scored = [(match_score(planned, row), row) for _, row in candidates.iterrows()]

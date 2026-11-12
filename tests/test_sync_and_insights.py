@@ -119,6 +119,42 @@ class SyncMappingTests(unittest.TestCase):
             self.assertEqual(len(results), 2)
             self.assertEqual(len(login_calls), 1)
 
+    def test_failed_sync_keeps_days_already_fetched(self):
+        def stats(day):
+            if day == "2026-08-31":
+                raise ConnectionError("Garmin went away")
+            return {"totalSteps": 5000}
+
+        with tempfile.TemporaryDirectory() as directory:
+            database_path = str(Path(directory) / "garmin.db")
+            with (
+                patch.object(db, "DB_PATH", database_path),
+                patch.object(sync, "login", return_value=FakeGarmin()),
+                patch.object(sync, "_sync_activities"),
+                patch.object(sync, "_sync_sleep", return_value=None),
+                patch.object(sync, "_sync_body_composition"),
+                patch.object(FakeGarmin, "get_stats", side_effect=stats, create=True),
+                patch.object(sync.time, "sleep"),
+            ):
+                with self.assertRaises(ConnectionError):
+                    sync._sync_garmin(3, date(2026, 8, 30), date(2026, 9, 1))
+                with db.get_connection() as conn:
+                    days = [row[0] for row in conn.execute("SELECT date FROM daily_stats")]
+
+        self.assertEqual(days, ["2026-08-30"])
+
+    def test_rejected_sign_in_is_not_retried(self):
+        calls = []
+
+        def rejected():
+            calls.append(1)
+            raise sync.GarminConnectAuthenticationError("401")
+
+        with patch.object(sync.time, "sleep") as sleep, self.assertRaises(sync.GarminConnectAuthenticationError):
+            sync._with_retry(rejected)
+        self.assertEqual(len(calls), 1)
+        sleep.assert_not_called()
+
 
 class InsightTests(unittest.TestCase):
     def test_sport_volume_uses_time_and_sport_sample_confidence(self):

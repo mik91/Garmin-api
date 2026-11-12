@@ -1,5 +1,6 @@
 """Account and AI provider connections managed from the web Connections page."""
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -83,25 +84,38 @@ def _cli_status(provider: str) -> dict:
     return status
 
 
+def _api_status() -> dict:
+    has_key = bool(os.environ.get("ANTHROPIC_API_KEY"))
+    return {"label": ai_insights.PROVIDERS["api"], "command": "", "installed": True, "version": "",
+            "logged_in": has_key, "account": "API key set" if has_key else "", "signing_in": False}
+
+
+def available_providers() -> tuple[str, ...]:
+    # A hosted server has no CLIs signed in to a personal subscription.
+    return ("api",) if config.HOSTED else (*ai_insights.CLI_PROVIDERS, "api")
+
+
 def ai_status() -> dict:
     try:
         provider = ai_insights.provider_name()
     except ai_insights.AIProviderError:
         provider = ""
+    clis = [name for name in available_providers() if name in ai_insights.CLI_PROVIDERS]
     with ThreadPoolExecutor(max_workers=2) as pool:
-        providers = dict(zip(ai_insights.PROVIDERS, pool.map(_cli_status, ai_insights.PROVIDERS)))
+        providers = dict(zip(clis, pool.map(_cli_status, clis)))
+    providers["api"] = _api_status()
     return {"provider": provider, "model": config.AI_MODEL, "providers": providers}
 
 
 def status(_body=None) -> dict:
-    return {"garmin": garmin_status(), "ai": ai_status()}
+    return {"garmin": garmin_status(), "ai": ai_status(), "hosted": config.HOSTED}
 
 
 def save_ai(body: dict) -> dict:
     provider = body.get("provider")
     model = body.get("model", "")
-    if provider not in ai_insights.PROVIDERS:
-        raise ValueError("Choose Claude or Codex.")
+    if provider not in available_providers():
+        raise ValueError("Choose one of the listed AI providers.")
     if not isinstance(model, str) or not MODEL_PATTERN.match(model.strip()):
         raise ValueError("Model names may only contain letters, numbers and . _ : / - [ ]")
     config.save_settings({"AI_PROVIDER": provider, "AI_MODEL": model.strip()})
@@ -119,8 +133,8 @@ def test_ai(_body=None) -> dict:
 def cli_login(body: dict) -> dict:
     """Start the CLI's own browser sign-in flow; the page polls status until it finishes."""
     provider = body.get("provider")
-    if provider not in ai_insights.PROVIDERS:
-        raise ValueError("Choose Claude or Codex.")
+    if config.HOSTED or provider not in ai_insights.CLI_PROVIDERS:
+        raise ValueError("Choose Claude Code or Codex.")
     command = config.CLAUDE_CLI if provider == "claude" else config.CODEX_CLI
     path = shutil.which(command)
     if path is None:

@@ -1,0 +1,34 @@
+# Runs Garmin Insights behind Caddy, which obtains and renews the HTTPS certificate.
+# Usage (on the server, from this folder):  docker compose up -d --build
+# Needs deploy/.env (GARMIN_DOMAIN) and deploy/server.env (secrets); see the *.example files.
+name: garmin-insights
+
+services:
+  app:
+    build: ..
+    restart: unless-stopped
+    env_file: server.env
+    environment:
+      GARMIN_PUBLIC_URL: https://${GARMIN_DOMAIN:?set GARMIN_DOMAIN in deploy/.env}
+    volumes:
+      - garmin_data:/app/data
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      GARMIN_DOMAIN: ${GARMIN_DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - app
+
+volumes:
+  garmin_data:
+  caddy_data:
+  caddy_config:

@@ -13,3 +13,7 @@ venv/
 # Local tooling
 .claude/
 .agents/
+
+# Server secrets
+deploy/server.env
+deploy/.env

@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS activities (
     anaerobic_te REAL,
     splits_json TEXT,
     exercise_sets_json TEXT,
+    weather_json TEXT,
     raw_json TEXT
 );
 
@@ -106,6 +107,95 @@ CREATE TABLE IF NOT EXISTS race_predictions (
     raw_json TEXT,
     fetched_at TEXT NOT NULL
 );
+
+-- Hevy lifting log. Times are UTC ISO strings as Hevy sends them; start_local is the
+-- wall-clock start, using the time zone of the matched (or nearest) Garmin activity.
+CREATE TABLE IF NOT EXISTS hevy_workouts (
+    workout_id TEXT PRIMARY KEY,
+    title TEXT,
+    description TEXT,
+    start_time TEXT,
+    end_time TEXT,
+    start_local TEXT,
+    updated_at TEXT,
+    garmin_activity_id INTEGER,
+    raw_json TEXT
+);
+
+CREATE TABLE IF NOT EXISTS hevy_exercises (
+    workout_id TEXT NOT NULL,
+    exercise_index INTEGER NOT NULL,
+    title TEXT,
+    template_id TEXT,
+    superset_id INTEGER,
+    notes TEXT,
+    PRIMARY KEY (workout_id, exercise_index)
+);
+
+CREATE TABLE IF NOT EXISTS hevy_sets (
+    workout_id TEXT NOT NULL,
+    exercise_index INTEGER NOT NULL,
+    set_index INTEGER NOT NULL,
+    set_type TEXT,
+    weight_kg REAL,
+    reps INTEGER,
+    rpe REAL,
+    distance_m REAL,
+    duration_s REAL,
+    PRIMARY KEY (workout_id, exercise_index, set_index)
+);
+
+CREATE TABLE IF NOT EXISTS hevy_exercise_templates (
+    template_id TEXT PRIMARY KEY,
+    title TEXT,
+    type TEXT,
+    primary_muscle_group TEXT,
+    secondary_muscle_groups_json TEXT,
+    is_custom INTEGER,
+    equipment TEXT,
+    thumbnail_url TEXT,
+    fetched_at TEXT
+);
+
+-- Workouts the AI coach created on Garmin Connect. The write tools only ever change or
+-- delete workouts listed here (and named with the "[CP] " prefix).
+CREATE TABLE IF NOT EXISTS coach_workouts (
+    workout_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    sport TEXT NOT NULL,
+    payload_hash TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS coach_schedules (
+    schedule_id TEXT PRIMARY KEY,
+    workout_id TEXT NOT NULL,
+    date TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (workout_id) REFERENCES coach_workouts(workout_id)
+);
+
+-- Coaching history: one row per decision (plan, change, review, note, upload, profile edit).
+CREATE TABLE IF NOT EXISTS coach_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    logged_at TEXT NOT NULL,
+    week_start TEXT,
+    kind TEXT NOT NULL,
+    readiness TEXT,
+    summary TEXT NOT NULL,
+    planned TEXT,
+    actual TEXT,
+    details_json TEXT
+);
+
+-- The athlete profile the coach reads before planning (races, cautions, rule overrides...).
+CREATE TABLE IF NOT EXISTS coach_profile (
+    section TEXT PRIMARY KEY,
+    content TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 
@@ -117,6 +207,7 @@ ACTIVITY_COLUMNS = {
     "anaerobic_te": "REAL",
     "splits_json": "TEXT",
     "exercise_sets_json": "TEXT",
+    "weather_json": "TEXT",
 }
 
 DAILY_COLUMNS = {
@@ -132,6 +223,14 @@ DAILY_COLUMNS = {
 }
 
 
+# Added after the first Hevy release; fetched_at stays NULL until the template is fetched again.
+HEVY_TEMPLATE_COLUMNS = {
+    "equipment": "TEXT",
+    "thumbnail_url": "TEXT",
+    "fetched_at": "TEXT",
+}
+
+
 def _ensure_columns(conn, table: str, columns: dict[str, str]):
     existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
     for name, column_type in columns.items():
@@ -142,12 +241,16 @@ def _ensure_columns(conn, table: str, columns: dict[str, str]):
 @contextmanager
 def get_connection():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
+    # Writers wait for each other instead of failing fast; a sync commits once per day.
+    conn = sqlite3.connect(DB_PATH, timeout=30)
     conn.row_factory = sqlite3.Row
     try:
+        # WAL lets the dashboard keep reading (and the web actions write) while a sync runs.
+        conn.execute("PRAGMA journal_mode=WAL")
         conn.executescript(SCHEMA)
         _ensure_columns(conn, "activities", ACTIVITY_COLUMNS)
         _ensure_columns(conn, "daily_stats", DAILY_COLUMNS)
+        _ensure_columns(conn, "hevy_exercise_templates", HEVY_TEMPLATE_COLUMNS)
         yield conn
         conn.commit()
     finally:

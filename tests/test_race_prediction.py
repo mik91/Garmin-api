@@ -32,7 +32,7 @@ class RacePredictionTests(unittest.TestCase):
                 "category": "Running",
                 "duration_s": 1180,
                 "distance_m": 5087,
-                "raw_json": '{"activityName":"Ottawa 5K Race","fastestSplit_5000":1164.5}',
+                "raw_json": '{"activityName":"City 5K Race","fastestSplit_5000":1164.5}',
             },
             {
                 "activity_id": 2,
@@ -48,7 +48,7 @@ class RacePredictionTests(unittest.TestCase):
             activities, date(2026, 9, 6)
         )
         self.assertEqual(len(efforts), 1)
-        self.assertEqual(efforts[0]["activity"], "Ottawa 5K Race")
+        self.assertEqual(efforts[0]["activity"], "City 5K Race")
         self.assertEqual(efforts[0]["formatted"], "19:24")
 
     def test_half_marathon_subsplits_are_not_classified_as_separate_races(self):
@@ -78,7 +78,7 @@ class RacePredictionTests(unittest.TestCase):
             "category": "Running",
             "duration_s": 1180,
             "distance_m": 5087,
-            "raw_json": '{"activityName":"Ottawa 5K Race","fastestSplit_5000":1164.5}',
+            "raw_json": '{"activityName":"City 5K Race","fastestSplit_5000":1164.5}',
         }] + [{
             "activity_id": day + 10,
             "start_time": pd.Timestamp("2026-08-01") + pd.Timedelta(days=day * 3),
@@ -144,6 +144,65 @@ class RacePredictionTests(unittest.TestCase):
         )
         self.assertEqual(prediction["source_effort"]["activity"], "Fast race")
         self.assertEqual(prediction["formatted"], "1:29:17")
+
+    def test_close_race_at_target_distance_beats_converted_shorter_race(self):
+        # The 5K converts to 1:29:17, a few seconds faster than the real half, which should win.
+        efforts = [
+            {
+                "distance": "5K", "distance_m": 5000, "seconds": 1164.5,
+                "formatted": "19:24", "date": "2026-05-23", "activity": "5K race",
+                "evidence": "verified race/time trial",
+            },
+            {
+                "distance": "Half marathon", "distance_m": 21097.5, "seconds": 5427,
+                "formatted": "1:30:27", "date": "2026-10-11", "activity": "Half race",
+                "evidence": "verified race/time trial",
+            },
+        ]
+        as_of = date(2026, 10, 27)
+        half = race_prediction._best_local_prediction(efforts, 21097.5, as_of)
+        self.assertEqual(half["source_effort"]["activity"], "Half race")
+        marathon = race_prediction._best_local_prediction(efforts, 42195, as_of)
+        self.assertEqual(marathon["source_effort"]["activity"], "Half race")
+        five = race_prediction._best_local_prediction(efforts, 5000, as_of)
+        self.assertEqual(five["source_effort"]["activity"], "5K race")
+
+    def test_close_10k_beats_close_5k_for_the_half_estimate(self):
+        # Both converted halves are within 16 seconds; the 10K is the nearer distance, so it wins.
+        efforts = [
+            {
+                "distance": "5K", "distance_m": 5000, "seconds": 1164.5,
+                "formatted": "19:24", "date": "2026-10-11", "activity": "5K race",
+                "evidence": "verified race/time trial",
+            },
+            {
+                "distance": "10K", "distance_m": 10000, "seconds": 2435,
+                "formatted": "40:35", "date": "2026-10-11", "activity": "10K race",
+                "evidence": "verified race/time trial",
+            },
+        ]
+        as_of = date(2026, 10, 27)
+        half = race_prediction._best_local_prediction(efforts, 21097.5, as_of)
+        self.assertEqual(half["source_effort"]["activity"], "10K race")
+        five = race_prediction._best_local_prediction(efforts, 5000, as_of)
+        self.assertEqual(five["source_effort"]["activity"], "5K race")
+
+    def test_clearly_faster_short_race_still_sets_the_half_estimate(self):
+        # A 5K that converts to about 1:25 beats a 1:30:27 half despite the distance gap.
+        efforts = [
+            {
+                "distance": "5K", "distance_m": 5000, "seconds": 1110,
+                "formatted": "18:30", "date": "2026-10-20", "activity": "New 5K race",
+                "evidence": "verified race/time trial",
+            },
+            {
+                "distance": "Half marathon", "distance_m": 21097.5, "seconds": 5427,
+                "formatted": "1:30:27", "date": "2026-10-11", "activity": "Half race",
+                "evidence": "verified race/time trial",
+            },
+        ]
+        half = race_prediction._best_local_prediction(efforts, 21097.5, date(2026, 10, 27))
+        self.assertEqual(half["source_effort"]["activity"], "New 5K race")
 
     def test_sync_stores_daily_prediction_history(self):
         class Client:
