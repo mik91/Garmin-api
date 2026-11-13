@@ -15,8 +15,9 @@ Connect or explicitly ask for an AI insight.
 - **Race prediction** – Garmin's predictions alongside an independent model calibrated on your race efforts
 - **AI insights** – summaries and chat through the Claude Code or Codex CLI, using your existing subscription (optional)
 - **Auto-sync** – background refresh while the server is running
-- **Claude tools (MCP)** – Claude Desktop and claude.ai can read your history and live Garmin data
-- **AI endurance coach** – on a self-hosted server, Claude plans a season, validates each week
+- **MCP server** – any MCP client (Claude Desktop, Claude Code, Codex, Cursor, VS Code, ...) can
+  read your history and live Garmin data
+- **AI endurance coach** – on a self-hosted server, your AI assistant plans a season, validates each week
   against coaching rules and puts the workouts on your Garmin calendar so they sync to the watch
 - **Companion Android app** – a separate, private app that signs in to the hosted server and shows
   and moves the coach's planned workouts (it uses `/api/plan`, `/api/plan/move` and `/api/review`)
@@ -47,7 +48,7 @@ off until you set it up:
 | --- | --- |
 | Dashboard, sync, calendar, race prediction | A Garmin Connect account |
 | AI insights and chat | [Claude Code](https://docs.claude.com/en/docs/claude-code) or the [Codex CLI](https://github.com/openai/codex), installed and signed in (`claude` then `/login`, or `codex login`) |
-| Claude Desktop tools (read-only) | Claude Desktop ([setup](#claude-desktop-mcp)) |
+| MCP tools on your machine (read-only) | Any MCP client that runs local (stdio) servers ([setup](#mcp-server)) |
 | Live `garmin_*` tools | A Garmin Personal API key |
 | Strength workouts | [Hevy](https://www.hevyapp.com/) Pro and its API key |
 | AI coach that writes workouts to Garmin, coaching history, the Android app | Your own server and domain, see [deploy/README.md](deploy/README.md) |
@@ -117,9 +118,10 @@ Connections page and the task picks up again.
 On Windows you can also run `.\start.ps1`. The older Streamlit dashboard is still
 available with `streamlit run app.py` (or `.\start.ps1 -Legacy`) on port 8501.
 
-## Claude Desktop (MCP)
+## MCP server
 
-`garmin_ai/mcp_server.py` lets Claude Desktop chats read your Garmin data, with two kinds of tools:
+`garmin_ai/mcp_server.py` is a standard [Model Context Protocol](https://modelcontextprotocol.io)
+server, so any MCP client can use it, with two kinds of tools:
 
 - **Live, from Garmin's official Personal API** (`garmin_activities`, `garmin_activity`,
   `garmin_activity_workout`, `garmin_daily_summaries`, `garmin_sleep`, `garmin_sleep_summaries`,
@@ -134,29 +136,53 @@ available with `streamlit run app.py` (or `.\start.ps1 -Legacy`) on port 8501.
   and status, VO2 max, recovery time, race predictions and the training calendar. `data/garmin.db`
   is opened read-only; keep it fresh with auto-sync or `python cli.py sync`.
 
-On Windows, quit Claude Desktop (tray icon > Quit) and run
-`.\scripts\install-claude-desktop-mcp.ps1`; Claude Desktop rewrites its config while running,
-so edits made with it open are lost. Or add this to `claude_desktop_config.json` yourself while
-the app is closed, using the Python that has this project's requirements installed:
+There are two ways to connect:
 
-```json
-{
-  "mcpServers": {
-    "garmin": {
-      "command": "C:\\path\\to\\Garmin-api\\.venv\\Scripts\\python.exe",
-      "args": ["-m", "garmin_ai.mcp_server"],
-      "env": {"PYTHONPATH": "C:\\path\\to\\Garmin-api"}
+- **Local (stdio, read-only):** the client starts `python -m garmin_ai.mcp_server` on your
+  machine. Use the Python that has this project's requirements installed, and set `PYTHONPATH`
+  to the project folder.
+- **Hosted (HTTPS with OAuth):** clients that support remote MCP servers connect to your own
+  server's `https://<your-domain>/mcp` and sign in there. Only this one has the coach's write
+  tools (see below and [deploy/README.md](deploy/README.md)).
+
+Local setup for a few clients (replace the paths):
+
+- **Claude Desktop:** on Windows, quit it (tray icon > Quit) and run
+  `.\scripts\install-claude-desktop-mcp.ps1`. Or, with the app closed, add this to
+  `claude_desktop_config.json` (it rewrites the file while running, so edits made with it open are lost):
+
+  ```json
+  {
+    "mcpServers": {
+      "garmin": {
+        "command": "C:\\path\\to\\Garmin-api\\.venv\\Scripts\\python.exe",
+        "args": ["-m", "garmin_ai.mcp_server"],
+        "env": {"PYTHONPATH": "C:\\path\\to\\Garmin-api"}
+      }
     }
   }
-}
-```
+  ```
 
-## AI coach: workout tools (remote connector only)
+- **Claude Code:**
+  `claude mcp add garmin -e PYTHONPATH=/path/to/Garmin-api -- /path/to/Garmin-api/.venv/bin/python -m garmin_ai.mcp_server`
+- **Codex CLI** (`~/.codex/config.toml`):
 
-The hosted server's `/mcp` (see [deploy/README.md](deploy/README.md)) also lets Claude create
-structured workouts and put them on your Garmin Connect calendar, so they sync to the watch.
-The local Claude Desktop server stays read-only, so there is a single record of what the coach
-created. To write from Claude Desktop, use the remote connector there too.
+  ```toml
+  [mcp_servers.garmin]
+  command = "/path/to/Garmin-api/.venv/bin/python"
+  args = ["-m", "garmin_ai.mcp_server"]
+  env = { PYTHONPATH = "/path/to/Garmin-api" }
+  ```
+
+- **Others** (Cursor, VS Code, ...): add a stdio server with the same command, arguments and
+  `PYTHONPATH`.
+
+## AI coach: workout tools (hosted server only)
+
+The hosted server's `/mcp` (see [deploy/README.md](deploy/README.md)) also lets your AI assistant
+create structured workouts and put them on your Garmin Connect calendar, so they sync to the watch.
+The local server stays read-only, so there is a single record of what the coach created. To let
+the coach write, connect your client to the hosted server.
 
 Every workout the tools create is named `[CP] …` and recorded in `coach_workouts` /
 `coach_schedules` in `garmin.db`. Workouts that are not both recorded and still named `[CP] `
@@ -225,8 +251,8 @@ in `garmin_ai/coaching/rules.json`. The history lives in
 | `athlete_profile()` / `update_athlete_profile(section, content, reason?)` | Races (JSON list with priority A/B/C), fitness anchors, constraints, cautions and `rule_overrides` (JSON merged into the rules). Returns the season phase (base, build, peak, taper, race week, recovery) from the next A race. Every edit keeps the old text in the log. |
 
 `training_calendar` marks the coach's workouts with `created_by_coach`. After changing this
-code, redeploy the server (deploy/README.md), then reconnect the connector in claude.ai if the
-new tools do not appear.
+code, redeploy the server (deploy/README.md), then reconnect your MCP client if the new tools do
+not appear.
 
 ### Weekly review (automatic)
 

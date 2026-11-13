@@ -3,8 +3,8 @@
 The hosted server runs the same app as local mode, plus:
 
 - a password sign-in for the dashboard (`/login`)
-- the remote MCP server at `/mcp`, protected by OAuth (for claude.ai, the Claude mobile apps and
-  the companion Android app)
+- the remote MCP server at `/mcp`, protected by OAuth, for any remote MCP client (claude.ai, Claude Code, Codex, ...) and
+  the companion Android app
 - AI insights through the Claude API
 - background Garmin sync inside the server
 
@@ -89,11 +89,18 @@ Without this you can sign in to Garmin from the hosted **Connections** page inst
 press **Sync now** (Garmin sometimes challenges sign-ins from data-centre addresses; copying
 the token avoids that).
 
-## 5. Connect Claude
+## 5. Connect an MCP client
 
-claude.ai → **Settings → Connectors → Add custom connector** → URL
-`https://garmin.example.com/mcp`. You are sent to your own sign-in page, then an
-**Allow access** page. The connector then works in claude.ai and the Claude Android app.
+Add a remote MCP server with the URL `https://garmin.example.com/mcp` in any client that
+supports remote servers with OAuth. You are sent to your own sign-in page, then an
+**Allow access** page. For example:
+
+- **claude.ai:** **Settings → Connectors → Add custom connector**. The connector then also
+  works in the Claude mobile apps.
+- **Claude Code:** `claude mcp add --transport http garmin https://garmin.example.com/mcp`,
+  then `/mcp` to sign in.
+- **Others** (Codex, Cursor, VS Code, ...): add it as a remote (streamable HTTP) server; the
+  client opens the sign-in page the first time.
 
 ## Hevy lifting data (optional)
 
