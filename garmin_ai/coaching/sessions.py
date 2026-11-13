@@ -37,6 +37,30 @@ SPEED = ["6 x 10 s hill sprints", "8 x 200 m at R pace / 200 m jog", "8 x 10 s h
          "6 x 30 s hills, jog down"]
 
 
+def work(pace_name: str | None, notes: str | None = None, **duration) -> dict:
+    """A work step at a named intensity (T, I, M, R, goal; None = by effort), duration as
+    time_s= or distance_m=. materialize.py turns the name into a pace target."""
+    return {"type": "interval", "duration": duration, "pace": pace_name, **({"notes": notes} if notes else {})}
+
+
+def jog(notes: str | None = None, **duration) -> dict:
+    return {"type": "recovery", "duration": duration or {"lap_button": True}, **({"notes": notes} if notes else {})}
+
+
+def repeat(count: int, *steps: dict) -> dict:
+    return {"type": "repeat", "repeat": {"count": int(count), "steps": list(steps)}}
+
+
+def _gaps(minutes: list, pace_name: str, gap_s) -> list[dict]:
+    """A pyramid: work blocks with a jog between (none after the last)."""
+    out = []
+    for i, m in enumerate(minutes):
+        out.append(work(pace_name, time_s=m * 60))
+        if i < len(minutes) - 1:
+            out.append(jog(time_s=gap_s(m)))
+    return out
+
+
 def pace(vdot: float, kind: str) -> float:
     """Seconds per km at Daniels intensity kind (T, I, M, R) for a VDOT."""
     return workouts._pace_for(FRACTIONS[kind], vdot)
@@ -62,82 +86,102 @@ def _closest(patterns: list[list[int]], dose: float) -> list[int]:
     return max(fitting, key=sum)
 
 
-def threshold(fmt: str, minutes: float, step: int) -> tuple[str, float]:
+def threshold(fmt: str, minutes: float, step: int) -> tuple[str, float, list[dict]]:
     rest = "2 min" if step < 4 else "90 s" if step < 8 else "60 s"
+    rest_s = 120 if step < 4 else 90 if step < 8 else 60
     if fmt == "tempo" and minutes < 18:
         fmt = "cruise"
     if fmt == "cruise":
         rep = 5 if minutes < 20 else 6 if minutes < 24 else 8 if minutes < 28 else 10
         n = max(2, fit(minutes, rep))
-        return f"cruise intervals: {n} x {rep} min T / {rest} jog", n * rep
+        return (f"cruise intervals: {n} x {rep} min T / {rest} jog", n * rep,
+                [repeat(n, work("T", time_s=rep * 60), jog(time_s=rest_s))])
     if fmt == "pyramid":
         p = _closest(T_PYRAMIDS, minutes)
-        return f"threshold pyramid: {'-'.join(map(str, p))} min at T / 90 s jog", sum(p)
+        return (f"threshold pyramid: {'-'.join(map(str, p))} min at T / 90 s jog", sum(p),
+                _gaps(p, "T", lambda m: 90))
     if fmt == "progression":
         m = round(minutes)
         return (f"progression run: 15 min easy, then {m} min building from marathon pace to T "
-                "(last 5 min at T)", m * 0.6)
+                "(last 5 min at T)", m * 0.6,
+                [work("M", "build from marathon pace towards T", time_s=max(5, m - 5) * 60),
+                 work("T", time_s=300)])
     if fmt == "tempo":
         m = round(min(minutes, 30))
-        return f"tempo: {m} min continuous at T", m
+        return f"tempo: {m} min continuous at T", m, [work("T", time_s=m * 60)]
     k = 4 if minutes < 20 else 5
     n = max(3, fit(minutes, k))
-    return f"tempo fartlek: {n} x ({k} min at T / 2 min steady), no stops", n * k
+    steady = {**work("M", "steady, no stop", time_s=120), "type": "recovery"}
+    return (f"tempo fartlek: {n} x ({k} min at T / 2 min steady), no stops", n * k,
+            [repeat(n, work("T", time_s=k * 60), steady)])
 
 
-def vo2(fmt: str, minutes: float, i_pace: float, phase: str) -> tuple[str, float]:
+def vo2(fmt: str, minutes: float, i_pace: float, phase: str) -> tuple[str, float, list[dict]]:
     if fmt == "hills" and phase not in ("base", "build"):
         fmt = "minutes"
     if fmt == "minutes":
         rep = 2 if minutes < 14 else 3
         n = max(4, fit(minutes, rep))
-        return f"{n} x {rep} min at I / {rep} min jog", n * rep
+        return (f"{n} x {rep} min at I / {rep} min jog", n * rep,
+                [repeat(n, work("I", time_s=rep * 60), jog(time_s=rep * 60))])
     if fmt in ("800s", "1k"):
         meters = 800 if fmt == "800s" else 1000
         n = max(4, fit(minutes * 60, meters / 1000 * i_pace))
         rest = "2 min" if meters == 800 else "2:30"
-        return f"{n} x {meters} m at I / {rest} jog", n * meters / 1000 * i_pace / 60
+        return (f"{n} x {meters} m at I / {rest} jog", n * meters / 1000 * i_pace / 60,
+                [repeat(n, work("I", distance_m=meters), jog(time_s=120 if meters == 800 else 150))])
     if fmt == "pyramid":
         p = _closest(I_PYRAMIDS, minutes)
-        return f"VO2 pyramid: {'-'.join(map(str, p))} min at I / equal jog", sum(p)
+        return (f"VO2 pyramid: {'-'.join(map(str, p))} min at I / equal jog", sum(p),
+                _gaps(p, "I", lambda m: m * 60))
     n = max(4, fit(minutes, 3))
-    return f"{n} x 3 min uphill at I effort / jog down", n * 3
+    return (f"{n} x 3 min uphill at I effort / jog down", n * 3,
+            [repeat(n, work(None, "uphill at I effort", time_s=180), jog("jog down"))])
 
 
-def race_pace(fmt: str, km: float, step: int) -> tuple[str, float]:
+def race_pace(fmt: str, km: float, step: int) -> tuple[str, float, list[dict]]:
     if fmt == "alternations":
         total = round(km * 2)
+        steps = [repeat(total // 2, work("goal", distance_m=1000), work("M", distance_m=1000))]
+        if total % 2:
+            steps.append(work("goal", distance_m=1000))
         return (f"alternations: {total} km continuous, alternating 1 km @ goal pace / "
-                "1 km at marathon pace", total / 2)
+                "1 km at marathon pace", total / 2, steps)
     if fmt == "cutdown":
         n = round(km)
         return (f"cutdown: {n} km continuous, starting at T and a little faster each km, "
-                "last 2 km at goal pace", 2)
+                "last 2 km at goal pace", 2,
+                [work("T", "a little faster each km", distance_m=max(1, n - 2) * 1000),
+                 work("goal", distance_m=2000)])
     rep = [1, 1.5, 2, 1, 3, 1][min(step, 5)]
     n = max(2, round(km / rep))
     rest = "1 min" if rep <= 1 else "90 s" if rep < 2 else "2 min"
     shown = f"{rep:g} km"
-    return f"{n} x {shown} @ goal pace / {rest} jog", n * rep
+    rest_s = 60 if rep <= 1 else 90 if rep < 2 else 120
+    return (f"{n} x {shown} @ goal pace / {rest} jog", n * rep,
+            [repeat(n, work("goal", distance_m=rep * 1000), jog(time_s=rest_s))])
 
 
 def build(kind: str, step: int, seen: int, week_km: float, vdot: float, phase: str,
           light: bool = False) -> dict:
     """One quality session: the dose for `step`, the format for the `seen`-th time this type
-    appears. A lighter week takes 80% of the dose."""
+    appears. A lighter week takes 80% of the dose. "steps" is the main set as workout steps
+    with named paces (see materialize.py)."""
     dose = capped_dose(kind, step, week_km, vdot)
     if light:
         dose *= 0.8
     fmt = ROTATION[kind][seen % len(ROTATION[kind])]
     if kind == "threshold":
-        text, at = threshold(fmt, dose, step)
+        text, at, steps = threshold(fmt, dose, step)
         unit = "min at T"
     elif kind == "vo2":
-        text, at = vo2(fmt, dose, pace(vdot, "I"), phase)
+        text, at, steps = vo2(fmt, dose, pace(vdot, "I"), phase)
         unit = "min at I"
     else:
-        text, at = race_pace(fmt, dose, step)
+        text, at, steps = race_pace(fmt, dose, step)
         unit = "km at goal pace"
-    return {"type": kind, "format": fmt, "dose": f"{round(at, 1):g} {unit}", "session": text}
+    return {"type": kind, "format": fmt, "step": step, "dose": f"{round(at, 1):g} {unit}", "session": text,
+            "steps": steps}
 
 
 def long_run_format(phase: str, seen: int, light: bool) -> str:

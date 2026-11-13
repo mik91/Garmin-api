@@ -184,8 +184,8 @@ create structured workouts and put them on your Garmin Connect calendar, so they
 The local server stays read-only, so there is a single record of what the coach created. To let
 the coach write, connect your client to the hosted server.
 
-Every workout the tools create is named `[CP] …` and recorded in `coach_workouts` /
-`coach_schedules` in `garmin.db`. Workouts that are not both recorded and still named `[CP] `
+Every workout the tools create is named `[TP] …` and recorded in `coach_workouts` /
+`coach_schedules` in `garmin.db`. Workouts that are not both recorded and still named `[TP] `
 on Garmin (Runna, Garmin Coach, your own) are never updated, unscheduled or deleted. Each upload
 is read back from Garmin and any difference is returned as an error. The tools use the sync's
 Garmin sign-in token; there are no extra credentials.
@@ -193,12 +193,12 @@ Garmin sign-in token; there are no extra credentials.
 | Tool | What it does |
 | --- | --- |
 | `create_workout(sport, name, steps, description?, pool_length_m?, date?, dry_run=false)` | Build and upload one workout, optionally scheduling it. `sport`: `running`, `cycling`, `lap_swimming`, `strength`. |
-| `schedule_workout(workout_id, date)` | Put a `[CP]` workout on the calendar (YYYY-MM-DD). |
+| `schedule_workout(workout_id, date)` | Put a `[TP]` workout on the calendar (YYYY-MM-DD). |
 | `upload_plan(items, dry_run=false, allow_errors=false)` | `items: [{date, workout: {sport, name, steps, …}, session?}]`. Creates and schedules a block in one call. It is safe to repeat: the same date + name is skipped when unchanged and updated when changed. Every week is checked with the coaching rules (see below); errors block the upload unless `allow_errors=true`. |
-| `list_planned_workouts(start?, end?)` | Only `[CP]` workouts, with summary and completion status. |
-| `update_workout(workout_id, sport?, name?, steps?, description?, pool_length_m?, dry_run=false)` | Change a `[CP]` workout. `steps`, when given, replaces all steps. |
-| `unschedule_workout(date? \| schedule_id?)` | Remove `[CP]` workouts from the calendar. Other workouts that day stay. |
-| `delete_workout(workout_id)` | Delete a `[CP]` workout and its calendar entries. |
+| `list_planned_workouts(start?, end?)` | Only `[TP]` workouts, with summary and completion status. |
+| `update_workout(workout_id, sport?, name?, steps?, description?, pool_length_m?, dry_run=false)` | Change a `[TP]` workout. `steps`, when given, replaces all steps. |
+| `unschedule_workout(date? \| schedule_id?)` | Remove `[TP]` workouts from the calendar. Other workouts that day stay. |
+| `delete_workout(workout_id)` | Delete a `[TP]` workout and its calendar entries. |
 | `weekly_load_summary(weeks=12)` | Per Monday–Sunday week: running km, runs, longest run, hours and sessions per sport (Hevy gym sessions count as strength), quality sessions (Garmin training-effect label tempo, threshold, VO2 max, anaerobic or speed), HR zone 4–5 minutes and training load. It also gives 12-week averages and the last 4 weeks compared with the 4 before. Read-only, also available locally. |
 | `training_paces(race_distance_m?, race_time?)` | Daniels-style (VDOT) easy, marathon, threshold, interval and repetition paces from the 5K prediction or a given race. Read-only, also available locally. |
 
@@ -220,7 +220,7 @@ Step schema (metric units):
 - Strength steps carry the exercise in `notes`.
 
 `upload_plan` runs the same validator as `validate_week_plan` on each week it touches, together
-with the `[CP]` workouts already scheduled that week. Minutes, run km and intensity are estimated
+with the `[TP]` workouts already scheduled that week. Minutes, run km and intensity are estimated
 from the steps: hard means HR zone 4+ or near threshold pace, the long run is the run named "long"
 (else the longest easy run of 60+ minutes), and names with race / time trial / all-out count as
 all-out (set `session.all_out` for a CSS or 5K test). Swim distance steps use 2:00/100 m
@@ -242,7 +242,7 @@ in `garmin_ai/coaching/rules.json`. The history lives in
 | `swim_trend(weeks=12)` / `swim_paces()` / `record_css_test(t400, t200, date?, note?)` | Swim pace per 100 m, SWOLF and longest swim per week; CSS from the 400 m + 200 m test with zones, kept as a history. The season plan's swim sets use the latest CSS. |
 | `easy_pace_trend(weeks=12, hr_low?, hr_high?)` → `corrected` | Easy-run efficiency corrected for speed, hills, warm-up and heat: pace at a reference HR per 3-week window with a margin of error. The sync fetches per-km laps and Garmin's per-activity weather (20 activities per sync, newest first, then older ones). |
 | `season_progress()` | Is the plan working: run km vs season targets (4 weeks), sessions completed, VDOT vs the line to the goal, checkpoint time trials (expected vs found in the synced runs), easy pace, swim trend, CSS age, readiness; flags (ok / watch / act) and a verdict. |
-| `week_review(week_start?)` | Planned vs done for one week (default last week): calendar sessions completed / missed, the `[CP]` plan's km and quality vs actual, readiness at start and end, the week's log, and a suggested `actual` line for the log. |
+| `week_review(week_start?)` | Planned vs done for one week (default last week): calendar sessions completed / missed, the `[TP]` plan's km and quality vs actual, readiness at start and end, the week's log, and a suggested `actual` line for the log. |
 | `easy_pace_trend(weeks=12, hr_low?, hr_high?)` | Easy-run pace inside one HR band per week; faster at the same HR = fitter. Read-only, also available locally. |
 | `readiness_calibration(weeks=16)` | Readiness before each past week vs sessions completed and missed, by status, to tune the thresholds. Read-only, also available locally. |
 | `validate_week_plan(plan, history_override?)` | Checks a drafted week (ramp, lighter week, quality count and spacing, races 4+ weeks apart, 80/20, long run, midday swims, easy-run targets, sessions per sport). History is filled from synced activities. Read-only, also available locally. |

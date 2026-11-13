@@ -11,7 +11,10 @@ import json
 import math
 import re
 
-PREFIX = "[CP] "
+PREFIX = "[TP] "
+# Workouts created before the rename are still ours: recognised, and renamed to PREFIX on update.
+LEGACY_PREFIXES = ("[CP] ",)
+OWNED_PREFIXES = (PREFIX, *LEGACY_PREFIXES)
 
 # key -> (id, displayOrder)
 SPORTS = {"running": (1, 1), "cycling": (2, 2), "swimming": (4, 4), "strength_training": (5, 3)}
@@ -49,7 +52,19 @@ def with_prefix(name: str) -> str:
     name = str(name or "").strip()
     if not name:
         raise WorkoutError("A workout needs a name.")
-    return name if name.startswith(PREFIX) else PREFIX + name
+    return PREFIX + strip_prefix(name)
+
+
+def is_owned_name(name) -> bool:
+    return str(name or "").startswith(OWNED_PREFIXES)
+
+
+def strip_prefix(name) -> str:
+    name = str(name or "")
+    for prefix in OWNED_PREFIXES:
+        if name.startswith(prefix):
+            return name[len(prefix):]
+    return name
 
 
 def parse_pace(value) -> float:
@@ -322,6 +337,72 @@ def canonical_steps(workout: dict) -> list[dict]:
     for segment in workout.get("workoutSegments") or []:
         visit(segment.get("workoutSteps"), 0)
     return rows
+
+
+def spec_from_payload(workout: dict) -> dict:
+    """The build_workout spec ({sport, name, steps, description, pool_length_m}) for a Garmin
+    payload: the reverse of build_workout, so a workout already on Garmin can join a plan."""
+    sport = _key(workout.get("sportType"), "sportTypeKey") or "running"
+
+    def duration(step):
+        end = _key(step.get("endCondition"), "conditionTypeKey")
+        value = float(step.get("endConditionValue") or 0)
+        if end == "lap.button":
+            return {"lap_button": True}
+        if end in ("time", "fixed.rest"):
+            return {"time_s": value}
+        if end == "distance":
+            return {"distance_m": value}
+        if end == "reps":
+            return {"reps": value}
+        raise WorkoutError(f"Unknown end condition {end!r}.")
+
+    def target(step):
+        kind = _key(step.get("targetType"), "workoutTargetTypeKey")
+        one, two = step.get("targetValueOne"), step.get("targetValueTwo")
+        if kind == "pace.zone":
+            return {"pace_min_per_km": sorted([format_pace(1000 / one), format_pace(1000 / two)])}
+        if kind == "heart.rate.zone":
+            return {"hr_zone": step["zoneNumber"]} if step.get("zoneNumber") else {"hr_bpm": [one, two]}
+        if kind == "power.zone":
+            return {"power_w": [one, two]}
+        if kind == "cadence":
+            return {"cadence": [one, two]}
+        return None
+
+    def convert(steps):
+        out = []
+        for step in steps or []:
+            kind = _key(step.get("stepType"), "stepTypeKey")
+            if step.get("type") == "RepeatGroupDTO":
+                repeat = {"count": int(step.get("numberOfIterations") or 1), "steps": convert(step.get("workoutSteps"))}
+                if step.get("skipLastRestStep"):
+                    repeat["skip_last_rest"] = True
+                out.append({"type": "repeat", "repeat": repeat})
+                continue
+            row = {"type": "interval" if kind == "main" else kind, "duration": duration(step)}
+            if kind != "rest" and target(step):
+                row["target"] = target(step)
+            if step.get("description"):
+                row["notes"] = step["description"]
+            swim = {}
+            for field, key, name in (("strokeType", "strokeTypeKey", "stroke"), ("drillType", "drillTypeKey", "drill"),
+                                     ("equipmentType", "equipmentTypeKey", "equipment")):
+                if _key(step.get(field), key):
+                    swim[name] = step[field][key]
+            if swim and kind != "rest":
+                row["swim"] = swim
+            out.append(row)
+        return out
+
+    steps = [s for segment in workout.get("workoutSegments") or [] for s in segment.get("workoutSteps") or []]
+    spec = {"sport": sport, "name": strip_prefix(workout.get("workoutName") or "Workout"),
+            "steps": convert(steps)}
+    if workout.get("description"):
+        spec["description"] = workout["description"]
+    if workout.get("poolLength"):
+        spec["pool_length_m"] = workout["poolLength"]
+    return spec
 
 
 def compare(sent: dict, stored: dict) -> list[str]:
@@ -626,7 +707,7 @@ def to_session(day: str, workout: dict, paces: dict | None = None, extra: dict |
     sport_type = _key(workout.get("sportType"), "sportTypeKey")
     sport = VALIDATOR_SPORTS.get(sport_type, "other")
     totals = estimate_totals(workout, easy_speed if sport == "run" else None)
-    name = str(workout.get("workoutName") or "").removeprefix(PREFIX)
+    name = strip_prefix(workout.get("workoutName"))
     hard = is_hard(workout, threshold)
     seconds = totals["duration_s"]
     if sport == "swim":  # estimate_totals cannot time swim distance steps

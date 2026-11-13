@@ -1,7 +1,7 @@
 """Garmin Connect writes for the AI coach: create, schedule, update and delete workouts.
 
 Safety rules:
-- Only workouts recorded in coach_workouts AND named with the "[CP] " prefix (checked
+- Only workouts recorded in coach_workouts AND named with the "[TP] " prefix (checked
   again on Garmin before any change) are ever updated, unscheduled or deleted. Workouts
   from Runna, Garmin Coach or made by hand are never touched.
 - Every upload is read back from Garmin and compared with what was sent.
@@ -15,7 +15,7 @@ from datetime import date, datetime, timedelta
 from garmin_ai import calendar as training_calendar
 from garmin_ai import db, workouts
 from garmin_ai.coaching import history
-from garmin_ai.workouts import PREFIX, WorkoutError
+from garmin_ai.workouts import WorkoutError, is_owned_name, strip_prefix
 
 
 class CoachError(Exception):
@@ -54,17 +54,17 @@ def _date(value: str) -> str:
 
 def _owned(conn, workout_id) -> dict:
     row = conn.execute("SELECT * FROM coach_workouts WHERE workout_id = ?", (str(workout_id),)).fetchone()
-    if row is None or not row["name"].startswith(PREFIX):
+    if row is None or not is_owned_name(row["name"]):
         raise CoachError(f"Workout {workout_id} was not created by these tools, so it will not be changed. "
-                         "Only [CP] workouts from list_planned_workouts can be updated, unscheduled or deleted.")
+                         "Only [TP] workouts from list_planned_workouts can be updated, unscheduled or deleted.")
     return dict(row)
 
 
 def _check_on_garmin(api, workout_id) -> dict:
     stored = api.get_workout_by_id(workout_id)
-    if not str(stored.get("workoutName", "")).startswith(PREFIX):
+    if not is_owned_name(stored.get("workoutName")):
         raise CoachError(f"Workout {workout_id} on Garmin is named {stored.get('workoutName')!r}, without the "
-                         "[CP] prefix, so it will not be changed.")
+                         "[TP] prefix, so it will not be changed.")
     return stored
 
 
@@ -220,7 +220,7 @@ def unschedule(day=None, schedule_id=None) -> dict:
         else:
             rows = conn.execute("SELECT * FROM coach_schedules WHERE date = ?", (_date(day),)).fetchall()
             if not rows:
-                return {"removed": [], "note": "No [CP] workouts are scheduled on that date. Other workouts "
+                return {"removed": [], "note": "No [TP] workouts are scheduled on that date. Other workouts "
                                                "(for example Runna) are never touched."}
         api = client()
         removed = []
@@ -235,7 +235,7 @@ def unschedule(day=None, schedule_id=None) -> dict:
 
 
 def move(schedule_id, day) -> dict:
-    """Move one scheduled [CP] workout to another day: schedule it on the new day first, then
+    """Move one scheduled [TP] workout to another day: schedule it on the new day first, then
     remove the old entry, so a failure never loses the workout. Logged in the coaching
     history as an adjustment, so the coach knows the athlete moved it."""
     day = _date(day)
@@ -256,22 +256,29 @@ def move(schedule_id, day) -> dict:
         conn.execute("DELETE FROM coach_schedules WHERE schedule_id = ?", (row["schedule_id"],))
         conn.commit()
         _refresh_calendar(api, conn, [old_day, day])
-        name = workout["name"].removeprefix(PREFIX)
+        name = strip_prefix(workout["name"])
         history.add_entry(conn, "adjustment", f"The athlete moved {name} from {old_day} to {day} in the app.",
                           week_start=day, details={"workout_id": int(workout_id), "from": old_day, "to": day,
                                                    "source": "app"})
+        from garmin_ai.coaching import rolling
+        rolling.record_move(conn, workout_id, old_day, day)
         conn.commit()
     return {"schedule_id": new_id, "workout_id": int(workout_id), "from": old_day, "date": day}
 
 
 def move_request(body: dict) -> dict:
-    """POST /api/plan/move {"schedule_id", "date"}: refusals become 400s."""
+    """POST /api/plan/move {"schedule_id", "date"}: refusals become 400s. A rolling-plan draft
+    ("draft:<id>") moves on the server only; a workout on Garmin moves there."""
+    from garmin_ai.coaching import rolling
     schedule_id, day = body.get("schedule_id"), body.get("date")
     if not isinstance(schedule_id, str) or not schedule_id or not isinstance(day, str):
         raise ValueError("Pass schedule_id and date (YYYY-MM-DD).")
     try:
+        if schedule_id.startswith(rolling.DRAFT_PREFIX):
+            with db.get_connection() as conn:
+                return rolling.move_draft(conn, schedule_id, day)
         return move(schedule_id, day)
-    except CoachError as error:
+    except (CoachError, history.HistoryError) as error:
         raise ValueError(str(error)) from None
 
 def delete_workout(workout_id) -> dict:
@@ -364,7 +371,7 @@ def plan_payload(query) -> dict:
         totals = workouts.estimate_totals(workout)
         items.append({
             "schedule_id": row["schedule_id"], "workout_id": int(row["workout_id"]), "date": row["date"],
-            "name": row["name"].removeprefix(PREFIX), "sport": row["sport"],
+            "name": strip_prefix(row["name"]), "sport": row["sport"],
             "category": workouts.category(workout, threshold),
             "status": plan.get("status") or ("planned" if row["date"] >= today.isoformat() else "unknown"),
             "matched_activity_id": plan.get("matched_activity_id"),
@@ -373,10 +380,17 @@ def plan_payload(query) -> dict:
             "duration_partial": totals["duration_partial"], "distance_partial": totals["distance_partial"],
             "pool_length_m": workout.get("poolLength"),
             "steps": workouts.structured_steps(workout)})
+    from garmin_ai.coaching import rolling
+    rolling_plan = None
+    with db.get_connection() as conn:
+        if (query.get("drafts") or ["1"])[0] != "0":
+            items += rolling.app_drafts(conn, start, end, threshold)
+            items.sort(key=lambda item: (item["date"], item["name"]))
+        rolling_plan = rolling.app_summary(conn)
     return {"start": start.isoformat(), "end": end.isoformat(), "plan_start": first,
             "workouts": items, "paces": paces, "goals": dashboard["goals"],
             "races": dashboard["races"], "season": dashboard["season"],
-            "weekly_review": dashboard["weekly_review"]}
+            "weekly_review": dashboard["weekly_review"], "rolling": rolling_plan}
 
 
 # --- whole plans ------------------------------------------------------------------------
@@ -442,7 +456,7 @@ def _scheduled_sessions(conn, first: str, last: str, paces, swim, easy, skip=())
 
 def _with_rest_of_week(conn, used: dict, monday: str, today: date, paces, swim, easy, light_pct) -> dict:
     """The week before `monday` is still running: count what is done (already in `used`)
-    plus the [CP] sessions still to come, so the ramp is not measured against half a week."""
+    plus the [TP] sessions still to come, so the ramp is not measured against half a week."""
     ran_today = conn.execute("SELECT 1 FROM activities WHERE type LIKE '%running%' "
                              "AND substr(start_time, 1, 10) = ?", (today.isoformat(),)).fetchone()
     first = today + timedelta(days=1) if ran_today else today
@@ -469,7 +483,7 @@ def _with_rest_of_week(conn, used: dict, monday: str, today: date, paces, swim, 
 
 def validate_plan(conn, built: list[dict], paces: dict | None, today: date | None = None) -> list[dict]:
     """Run the coaching validator on every week the upload touches: the new items plus the
-    [CP] workouts already scheduled that week. built: [{date, payload, session?}].
+    [TP] workouts already scheduled that week. built: [{date, payload, session?}].
     Runs without a pace target are measured at the athlete's own recent easy pace."""
     from garmin_ai.coaching import validate_week
     today = today or date.today()

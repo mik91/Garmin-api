@@ -163,19 +163,19 @@ class AdherenceTests(unittest.TestCase):
         self.assertEqual(result.iloc[0]["status"], "completed")
 
     def test_activity_named_after_a_workout_matches_that_workout(self):
-        # Runna and [CP] both planned an easy run on the same day; the watch ran the [CP] one.
+        # Runna and [TP] both planned an easy run on the same day; the watch ran the [TP] one.
         scheduled = pd.DataFrame([
             {"scheduled_workout_id": "runna", "date": pd.Timestamp("2026-11-11"),
              "name": "W1 Wed Easy Run #2 - 7.5km Easy Run (7.5km)", "sport": "running",
              "duration_s": None, "distance_m": 7500, "associated_activity_id": None},
             {"scheduled_workout_id": "cp", "date": pd.Timestamp("2026-11-11"),
-             "name": "[CP] Easy 47min + strides", "sport": "running",
+             "name": "[TP] Easy 47min + strides", "sport": "running",
              "duration_s": 2820, "distance_m": None, "associated_activity_id": None},
         ])
         actual = activities({
             "activity_id": 7, "start_time": "2026-11-11 07:00:00", "type": "running", "category": "Running",
             "duration_s": 2940, "distance_m": 6900,
-            "raw_json": json.dumps({"activityName": "Montreal - [CP] Easy 47min + strides"}),
+            "raw_json": json.dumps({"activityName": "Montreal - [TP] Easy 47min + strides"}),
         })
         result = calendar.build_adherence(scheduled, actual, today=date(2026, 11, 12)).set_index("scheduled_workout_id")
         self.assertEqual((result.loc["cp", "status"], result.loc["cp", "matched_activity_id"]), ("completed", 7))

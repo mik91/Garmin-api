@@ -7,8 +7,19 @@
     "bikes_min": 1,
     "gym_min": 0,
     "gym_max": 1,
-    "_flex_example": {"count": 1, "sports": ["gym", "bike"], "optional": true,
-                      "prefer": {"default": "gym", "build": "bike", "peak": "bike"}},
+    "_flex_example": {
+      "count": 1,
+      "sports": [
+        "gym",
+        "bike"
+      ],
+      "optional": true,
+      "prefer": {
+        "default": "gym",
+        "build": "bike",
+        "peak": "bike"
+      }
+    },
     "_note": "Optional flex: up to `count` extra sessions beyond gym_max / bikes_min, in any of `sports`. optional=true means the athlete decides each week (e.g. skip when tired). prefer picks the sport by season phase (base, build, peak, taper, race_week, recovery; default otherwise). Set it as structure.flex in the profile's rule_overrides."
   },
   "ramp": {
@@ -79,5 +90,22 @@
     "build_weeks": 10,
     "recovery_weeks_after_race": 1,
     "note": "Weeks before the next A race (counted from this Monday): race_week 0, taper <= taper_weeks, then peak, build, base. Recovery for the week after an A or B race."
+  },
+  "execution": {
+    "pace_tolerance_s": 3,
+    "on_target_share": 0.75,
+    "complete_share": 0.9,
+    "cut_short_share": 0.75,
+    "max_fade_s": 8,
+    "max_hr_drift": 12,
+    "bias_s": 5,
+    "bias_sessions": 2,
+    "_note": "Session reviews (execution.py): a rep is on target within pace_tolerance_s of the range; a session is repeated when under complete_share of reps are done, half the reps are slow, the second half fades more than max_fade_s and ends slow, or HR drifts more than max_hr_drift bpm (reps of 3 min+, from rep 2). Two sessions in a row bias_s off the range in one direction raise a pace flag."
+  },
+  "rolling": {
+    "auto_publish": "never",
+    "minor_km_pct": 10,
+    "watch_sports": ["run", "swim", "bike", "gym"],
+    "_note": "Rolling plan (docs/rolling-plan.md): what the Sunday job does with next week after its review. never: wait for the athlete (decide_proposal / publish_week or the app). unchanged: publish the week when the review changed nothing. minor: also approve and publish a small change (only easy runs, swims, bike, gym or the optional session changed, same days, run km within minor_km_pct). always: approve and publish every proposal. A week that breaks a coaching rule is never published automatically. watch_sports: the sports sent to the watch; the others (e.g. gym logged in Hevy) stay in the plan only. Set it in the profile's rule_overrides, e.g. {\"rolling\": {\"auto_publish\": \"minor\"}}."
   }
 }

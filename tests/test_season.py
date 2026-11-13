@@ -26,12 +26,20 @@ class GenerateTests(unittest.TestCase):
         self.assertEqual(self.weeks[-1]["quality"][-1]["type"], "race")
 
     def test_volume_and_long_run_limits(self):
-        for prev, cur in zip(self.weeks, self.weeks[1:]):
-            if not cur["light"] and cur["phase"] not in ("taper", "race_week") and not prev["light"]:
-                self.assertLessEqual(cur["run_km"], round(prev["run_km"] * 1.1, 1) + 0.1)
+        for i, (prev, cur) in enumerate(zip(self.weeks, self.weeks[1:]), start=1):
+            if cur["light"] or cur["phase"] in ("taper", "race_week"):
+                continue
+            if prev["light"]:  # back over two weeks: halfway, then the volume from before
+                before, after = self.weeks[i - 2], self.weeks[i + 1]
+                self.assertAlmostEqual(cur["run_km"], (prev["run_km"] + before["run_km"]) / 2, delta=0.1)
+                if not after["light"] and after["phase"] not in ("taper", "race_week"):
+                    self.assertEqual(after["run_km"], before["run_km"])
+            elif i < 2 or not self.weeks[i - 2]["light"]:
+                self.assertLessEqual(cur["run_km"], prev["run_km"] * 1.1 + 1e-9)
         normal = [w for w in self.weeks if not w["light"] and w["phase"] not in ("taper", "race_week")]
-        for prev, cur in zip(normal, normal[1:]):  # the long run grows <= 1.5 km per normal week
-            self.assertLessEqual(cur["long_run_km"], prev["long_run_km"] + 1.5 + 1e-9)
+        for i, cur in enumerate(normal[1:], start=1):  # <= 1.5 km over the longest so far
+            longest = max(w["long_run_km"] for w in normal[:i])
+            self.assertLessEqual(cur["long_run_km"], longest + 1.5 + 1e-9)
         for w in self.weeks:
             self.assertLessEqual(w["run_km"], 56)
             self.assertLessEqual(w["long_run_km"], 18)
@@ -158,6 +166,18 @@ class SeasonToolTests(Base):
         checked = coach.upload_plan(heavy, dry_run=True)["validation"][0]
         self.assertTrue(any("quality sessions planned; the season plan has 1" in w["message"]
                             for w in checked["warnings"] if w["rule"] == "season"), checked["warnings"])
+
+    def test_a_lighter_week_run_as_planned_does_not_cap_the_way_back(self):
+        mcp_server.update_athlete_profile("season_plan", json.dumps(ANCHOR))
+        weeks = season.generate(ANCHOR, RACE, load_rules())
+        i = next(i for i, w in enumerate(weeks) if w["light"])
+        light, back = weeks[i], weeks[i + 1]
+        with db.get_connection() as conn:
+            as_planned = season.targets_for(conn, back["week_start"], last_week_km=light["run_km"])
+            short = season.targets_for(conn, back["week_start"], last_week_km=light["run_km"] - 10)
+        self.assertEqual(as_planned["run_km"], back["run_km"])
+        self.assertNotIn("planned_run_km", as_planned)
+        self.assertLess(short["run_km"], back["run_km"])  # a missed week still slows the plan
 
     def test_bad_season_plan_is_refused(self):
         self.assertTrue(mcp_server.update_athlete_profile("season_plan", '{"start_week": "2026-11-16"}')

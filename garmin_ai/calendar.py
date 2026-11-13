@@ -144,7 +144,7 @@ def _activity_names(activities: pd.DataFrame) -> pd.Series:
 
 def _title_matches(scheduled: pd.DataFrame, activities: pd.DataFrame) -> dict[str, object]:
     """schedule id -> activity, when the activity's name contains the planned workout's name on
-    the same day (the watch names an activity after the workout it ran, e.g. "Montreal - [CP]
+    the same day (the watch names an activity after the workout it ran, e.g. "Montreal - [TP]
     Easy 47min + strides"). The longest matching name wins, so "Easy Run #2" beats "Easy Run"."""
     if activities.empty:
         return {}

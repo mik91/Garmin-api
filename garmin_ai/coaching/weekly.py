@@ -123,7 +123,23 @@ def build(conn, week_start: str, today: date | None = None) -> dict:
         "next_week": _next_week(target),
         "summary": week["suggested_actual"],
     }
+    drift = _drift(conn, monday)
+    if drift is not None:
+        card["plan_drift"] = drift
     return {"card": card, "progress": status, "week": week, "next_week_target": target}
+
+
+def _drift(conn, monday: date) -> list[dict] | None:
+    """With a rolling plan, the drift patterns of the 6 weeks to this one."""
+    if not conn.execute("SELECT 1 FROM plan_versions LIMIT 1").fetchone():
+        return None
+    from garmin_ai.coaching import rolling
+    try:
+        start = (monday - timedelta(weeks=5)).isoformat()
+        return rolling.drift(conn, start, monday.isoformat(), today=monday + timedelta(days=7))["patterns"]
+    except Exception as error:
+        log.warning("Plan drift failed: %s", error)
+        return None
 
 
 def _summary(card: dict) -> str:
@@ -162,6 +178,12 @@ def _existing(conn, week_start: str) -> list[int]:
 def run(conn, week_start: str, today: date | None = None, synced_at: str | None = None) -> dict:
     """Compute and store the review for one week, replacing an earlier automatic one."""
     week_start = week_start_of(week_start)
+    from garmin_ai.coaching import execution
+    try:  # sessions that went badly hold their progression step (the plan only gets more cautious)
+        week_end = (date.fromisoformat(week_start) + timedelta(days=6)).isoformat()
+        execution.apply_holds(conn, execution.reviews(conn, week_start, week_end, today=today))
+    except Exception:
+        pass
     payload = build(conn, week_start, today)
     card = payload["card"]
     readiness = card["readiness"]["end"]
@@ -173,7 +195,32 @@ def run(conn, week_start: str, today: date | None = None, synced_at: str | None 
                               readiness=readiness if readiness in history.READINESS else None,
                               planned=_planned_text(card), actual=card["summary"], details=details)
     conn.commit()
+    roll_forward(conn, week_start, today, payload)
     return entry
+
+
+def roll_forward(conn, week_start: str, today: date | None, payload: dict) -> dict | None:
+    """With a rolling plan, propose next week's changes from this review, then approve and
+    publish them only as far as the rules' rolling.auto_publish policy allows."""
+    from garmin_ai.coaching import rolling
+    if not conn.execute("SELECT 1 FROM plan_versions LIMIT 1").fetchone():
+        return None
+    next_monday = (date.fromisoformat(week_start) + timedelta(days=7)).isoformat()
+    rolling.refresh_hr_zones(conn)
+    try:
+        from garmin_ai import coach
+        paces = coach.current_paces()
+        rolling.on_fitness(conn, paces.get("vdot") if paces else None)
+    except Exception as error:
+        log.warning("Rolling plan fitness update failed: %s", error)
+    try:
+        result = rolling.roll_forward(conn, next_monday, today or date.today(), review=payload, save=True)
+        result["auto"] = rolling.auto_apply(conn, result)
+        return result
+    except Exception as error:  # a broken plan must not stop the review
+        log.warning("Rolling plan roll forward failed: %s", error)
+        conn.rollback()
+        return None
 
 
 def has_review(conn, week_start: str) -> bool:

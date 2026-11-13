@@ -91,20 +91,20 @@ class CoachTests(unittest.TestCase):
         with patch.object(coach, "client", side_effect=AssertionError("network")):
             result = coach.create_workout("running", "Test", week()["steps"], dry_run=True)
             plan = coach.upload_plan([{"date": "2026-11-18", "workout": week()}], dry_run=True)
-        self.assertEqual(result["garmin_payload"]["workoutName"], "[CP] Test")
+        self.assertEqual(result["garmin_payload"]["workoutName"], "[TP] Test")
         self.assertEqual(plan["items"][0]["action"], "create")
         self.assertEqual(self.rows("SELECT COUNT(*) FROM coach_workouts"), [(0,)])
 
     def test_create_schedule_list_and_delete(self):
         result = coach.create_workout("running", "Test", week()["steps"], date_="2026-11-18")
         workout_id = result["workout_id"]
-        self.assertEqual(self.api.workouts[workout_id]["workoutName"], "[CP] Test")
+        self.assertEqual(self.api.workouts[workout_id]["workoutName"], "[TP] Test")
         self.assertEqual(self.rows("SELECT workout_id, date FROM coach_schedules"), [(str(workout_id), "2026-11-18")])
         planned = coach.list_planned("2026-11-01", "2026-11-30")
-        self.assertEqual((planned[0]["name"], planned[0]["schedule_id"]), ("[CP] Test", result["schedule_id"]))
+        self.assertEqual((planned[0]["name"], planned[0]["schedule_id"]), ("[TP] Test", result["schedule_id"]))
         calendar = json.loads(mcp_server.training_calendar("2026-11-01", "2026-11-30"))
         flags = {plan["name"]: plan["created_by_coach"] for plan in calendar}
-        self.assertEqual(flags, {"[CP] Test": True, "W2 Tue Intervals": False})
+        self.assertEqual(flags, {"[TP] Test": True, "W2 Tue Intervals": False})
 
         deleted = coach.delete_workout(workout_id)
         self.assertEqual(deleted["unscheduled_dates"], ["2026-11-18"])

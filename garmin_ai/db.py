@@ -158,7 +158,7 @@ CREATE TABLE IF NOT EXISTS hevy_exercise_templates (
 );
 
 -- Workouts the AI coach created on Garmin Connect. The write tools only ever change or
--- delete workouts listed here (and named with the "[CP] " prefix).
+-- delete workouts listed here (and named with the "[TP] " prefix).
 CREATE TABLE IF NOT EXISTS coach_workouts (
     workout_id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -196,6 +196,42 @@ CREATE TABLE IF NOT EXISTS coach_profile (
     content TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+
+-- Rolling plan (docs/rolling-plan.md): every day's workout to race day, kept here as drafts;
+-- only published rows are on Garmin. Rows are never edited once proposed or published: a
+-- change adds a row with parent_id and marks the old one superseded.
+CREATE TABLE IF NOT EXISTS plan_versions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    trigger TEXT NOT NULL,
+    anchor_json TEXT NOT NULL,
+    rules_hash TEXT NOT NULL,
+    note TEXT
+);
+
+CREATE TABLE IF NOT EXISTS plan_drafts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    plan_id INTEGER NOT NULL,
+    week_start TEXT NOT NULL,
+    date TEXT NOT NULL,
+    slot TEXT,
+    sport TEXT NOT NULL,
+    name TEXT NOT NULL,
+    kind TEXT,
+    spec_json TEXT NOT NULL,
+    session_json TEXT,
+    status TEXT NOT NULL,
+    origin TEXT NOT NULL,
+    reason TEXT,
+    parent_id INTEGER,
+    workout_id TEXT,
+    activity_id TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (plan_id) REFERENCES plan_versions(id)
+);
+CREATE INDEX IF NOT EXISTS idx_plan_drafts_week ON plan_drafts(week_start, status);
+CREATE INDEX IF NOT EXISTS idx_plan_drafts_date ON plan_drafts(date);
 """
 
 

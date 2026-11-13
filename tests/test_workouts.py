@@ -39,7 +39,7 @@ class RunTests(unittest.TestCase):
                 {"type": "recovery", "duration": {"time_s": 60}}]}},
             {"type": "cooldown", "duration": {"distance_m": 1000}},
         ])
-        self.assertEqual(workout["workoutName"], "[CP] Test 10min easy + 4x1min")
+        self.assertEqual(workout["workoutName"], "[TP] Test 10min easy + 4x1min")
         self.assertEqual(workout["sportType"], {"sportTypeId": 1, "sportTypeKey": "running", "displayOrder": 1})
         warmup, repeat, cooldown = steps_of(workout)
         self.assertEqual((warmup["targetType"]["workoutTargetTypeKey"], warmup["zoneNumber"]), ("heart.rate.zone", 2))
@@ -67,9 +67,11 @@ class RunTests(unittest.TestCase):
         self.assertAlmostEqual(step["targetValueTwo"], 4.5454545, places=6)
 
     def test_easy_run_on_hr_zone_and_numeric_pace(self):
-        workout = build_workout("run", "[CP] Easy", [
+        workout = build_workout("run", "[TP] Easy", [
             {"type": "interval", "duration": {"time_s": 2700}, "target": {"hr_zone": 2}, "notes": "conversational"}])
-        self.assertEqual(workout["workoutName"], "[CP] Easy")  # no double prefix
+        self.assertEqual(workout["workoutName"], "[TP] Easy")  # no double prefix
+        legacy = build_workout("run", "[CP] Easy", [{"type": "interval", "duration": {"time_s": 600}}])
+        self.assertEqual(legacy["workoutName"], "[TP] Easy")  # old prefix renamed, not stacked
         step = steps_of(workout)[0]
         self.assertEqual((step["zoneNumber"], step["description"]), (2, "conversational"))
         numeric = build_workout("running", "x", [
@@ -236,7 +238,7 @@ class PaceAndPlanTests(unittest.TestCase):
         ]
         warnings = workouts.pace_warnings(items, paces)
         self.assertEqual(len(warnings), 1)
-        self.assertIn("2026-11-16 [CP] Easy", warnings[0])
+        self.assertIn("2026-11-16 [TP] Easy", warnings[0])
         self.assertIn("faster than marathon", warnings[0])
         self.assertEqual(workouts.pace_warnings(items[2:3], paces), [])
         self.assertEqual(workouts.pace_warnings(items, None), [])

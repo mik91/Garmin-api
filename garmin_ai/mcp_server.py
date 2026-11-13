@@ -19,9 +19,8 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
 from garmin_ai import coach, config, db, hevy, load_summary, personal_api, web_dashboard, workouts
-from garmin_ai.coaching import (assess_readiness, efficiency, history, load_rules, progress, review, season,
-                                swim,
-                                validate_week)
+from garmin_ai.coaching import (assess_readiness, efficiency, execution, history, load_rules, progress, review,
+                                season, swim, validate_week)
 
 
 TOOLS = []
@@ -49,7 +48,8 @@ def write_tool(destructive: bool = False, idempotent: bool = False, read_only: b
 
 
 INSTRUCTIONS = """Garmin training data and an endurance coach. Method (docs/coaching-method.md):
-Weekly review: season_progress (flags and verdict), then week_review of the week.
+Weekly review: season_progress (flags and verdict), week_review of the week, and
+session_review for how the quality runs went (repeat or advance).
 To plan a week: 1) athlete_profile (races, season phase, cautions), coaching_history and
 the week's target from season_plan (volume, long run, quality sessions, swim);
 2) week_review of last week (planned vs done), easy_pace_trend and swim_trend; 3) weekly_load_summary;
@@ -58,12 +58,18 @@ the week's target from season_plan (volume, long run, quality sessions, swim);
 the coaching rules; fix all errors, show warnings and a day/sport/session/purpose table;
 8) upload only after the athlete says OK; 9) log_coaching_decision (plan, readiness, why).
 Mid-week change (sick, sore, missed): do not make up missed sessions; adjust the rest of the
-week, dry-run, show the diff, upload after OK, log an adjustment. Ask before adding a
+week, dry-run, show the diff, upload after OK, log an adjustment (rolling-plan weeks: use
+propose_week for today to Sunday, then decide_proposal, which updates Garmin). Ask before adding a
 session, changing a goal, skipping a lighter week or moving the long run. Easy runs get an
 HR range only, no pace. A flexible slot (rules structure.flex) is planned as optional "(opt)"
 in the sport the validator prefers for the phase; the athlete decides on the day.
 Swim sets use zones from swim_paces (CSS); after a CSS test, save it with record_css_test.
-Only [CP] workouts are ever changed. Keep reasons to 2-3 sentences.
+Only [TP] workouts are ever changed. Keep reasons to 2-3 sentences.
+Rolling plan: rolling_plan shows every drafted workout to race day (not on Garmin until
+published); after a season plan change, CSS test, race result or profile change, run
+regenerate_plan (dry run first, save after OK). Each Sunday the review proposes next week's
+changes (roll_forward): show the proposal and flags, adjust with propose_week if needed,
+decide_proposal after the athlete's OK, then publish_week (dry run, then publish).
 Workout writes, the coaching history and the profile are on the hosted connector only."""
 
 
@@ -194,7 +200,7 @@ def race_predictions() -> str:
 @tool
 def training_calendar(start: str | None = None, end: str | None = None) -> str:
     """From the local synced history: planned workouts with completion status (completed, missed, skipped...) in a date range.
-    Defaults to two weeks back through four weeks ahead. created_by_coach marks [CP] workouts
+    Defaults to two weeks back through four weeks ahead. created_by_coach marks [TP] workouts
     from the coach's write tools; the others come from Runna, Garmin Coach or manual planning."""
     today = date.today()
     start = start or (today - timedelta(days=14)).isoformat()
@@ -488,7 +494,7 @@ Rules:
   fly, individual_medley, mixed, drill, any_stroke. drill: kick, pull, drill. equipment: fins,
   kickboard, paddles, pull_buoy, snorkel. skip_last_rest drops the rest after the last rep.
 - Strength: use time_s, reps or lap_button, and put the exercise and weight in notes.
-- Names get the "[CP] " prefix automatically.
+- Names get the "[TP] " prefix automatically.
 Examples:
   Run intervals: [{"type": "warmup", "duration": {"time_s": 600}, "target": {"hr_zone": 2}},
     {"type": "repeat", "repeat": {"count": 4, "steps": [
@@ -530,7 +536,7 @@ def create_workout(sport: str, name: str, steps: list[dict], description: str | 
 
 @write_tool(idempotent=False)
 def schedule_workout(workout_id: int, date: str) -> str:
-    """Put a [CP] workout (from create_workout or list_planned_workouts) on the Garmin
+    """Put a [TP] workout (from create_workout or list_planned_workouts) on the Garmin
     calendar on date (YYYY-MM-DD). Only workouts these tools created can be scheduled."""
     return _coach_call(lambda: coach.schedule_workout(workout_id, date))
 
@@ -539,13 +545,13 @@ def schedule_workout(workout_id: int, date: str) -> str:
 def upload_plan(items: list[dict], dry_run: bool = False, allow_errors: bool = False) -> str:
     """Create and schedule several workouts (typically a week) in one call.
     items: [{"date": "YYYY-MM-DD", "workout": {"sport", "name", "steps", "description"?,
-    "pool_length_m"?}, "session"?: {...}}]. Safe to repeat: a [CP] workout already on that date
+    "pool_length_m"?}, "session"?: {...}}]. Safe to repeat: a [TP] workout already on that date
     with the same name is left alone if unchanged, or updated in place if it changed.
     Every week the items touch is checked with the coaching rules (same checks as
-    validate_week_plan), together with the [CP] workouts already scheduled that week. Minutes,
+    validate_week_plan), together with the [TP] workouts already scheduled that week. Minutes,
     run km and intensity are estimated from the steps (hard = HR zone 4+ or near threshold
     pace; a run named "long", else the longest 60+ min easy run, is the long run; names with
-    race / time trial / all-out are all-out; set session all_out for a CSS or 5K test; swim
+    race / time trial / all-out are all-out; set session all_out for a 5K test (not a CSS test: the 28-day rule is for running); swim
     distance uses rules swim.default_pace_s_per_100m). "session" corrects the estimate or adds what the
     steps cannot show: slot ("midday"), kind ("long"), intensity, all_out, hard_minutes, km,
     minutes. Rule errors block a real upload; fix them, or pass allow_errors=true only after
@@ -558,7 +564,7 @@ def upload_plan(items: list[dict], dry_run: bool = False, allow_errors: bool = F
 def update_workout(workout_id: int, sport: str | None = None, name: str | None = None,
                    steps: list[dict] | None = None, description: str | None = None,
                    pool_length_m: float | None = None, dry_run: bool = False) -> str:
-    """Change a [CP] workout these tools created. Fields left out keep their current value;
+    """Change a [TP] workout these tools created. Fields left out keep their current value;
     steps, when given, replace all steps. Scheduled dates stay. Refuses any other workout."""
     return _coach_call(lambda: coach.update_workout(workout_id, sport, name, steps, description,
                                                     pool_length_m, dry_run))
@@ -566,7 +572,7 @@ def update_workout(workout_id: int, sport: str | None = None, name: str | None =
 
 @write_tool(destructive=True, idempotent=True)
 def unschedule_workout(date: str | None = None, schedule_id: str | None = None) -> str:
-    """Remove [CP] workouts from the Garmin calendar, by date (YYYY-MM-DD, removes every [CP]
+    """Remove [TP] workouts from the Garmin calendar, by date (YYYY-MM-DD, removes every [TP]
     workout that day) or by one schedule_id. The workout itself stays in the library.
     Workouts from other sources (Runna, manual) on that date are never touched."""
     return _coach_call(lambda: coach.unschedule(date, schedule_id))
@@ -574,7 +580,7 @@ def unschedule_workout(date: str | None = None, schedule_id: str | None = None) 
 
 @write_tool(destructive=True, idempotent=True)
 def delete_workout(workout_id: int) -> str:
-    """Delete a [CP] workout these tools created, and its calendar entries. Refuses any
+    """Delete a [TP] workout these tools created, and its calendar entries. Refuses any
     workout these tools did not create."""
     return _coach_call(lambda: coach.delete_workout(workout_id))
 
@@ -586,7 +592,7 @@ upload_plan.__doc__ += "\nEach workout's steps use the same schema as create_wor
 
 @write_tool(read_only=True)
 def list_planned_workouts(start: str | None = None, end: str | None = None) -> str:
-    """Only the [CP] workouts the coach tools created, with date, schedule_id, workout_id,
+    """Only the [TP] workouts the coach tools created, with date, schedule_id, workout_id,
     a readable summary and completion status (planned, completed, missed...). Defaults to
     two weeks back through six weeks ahead. Other planned workouts are in training_calendar."""
     return _coach_call(lambda: coach.list_planned(start, end))
@@ -706,7 +712,7 @@ def readiness_calibration(weeks: int = 16) -> str:
 @write_tool(read_only=True)
 def week_review(week_start: str | None = None) -> str:
     """Planned vs done for one Monday-Sunday week (default: last complete week). Planned:
-    every calendar workout (all sources) with status completed / missed / skipped, the [CP]
+    every calendar workout (all sources) with status completed / missed / skipped, the [TP]
     plan's estimated run km and quality sessions. Actual: run km and change vs the week
     before, runs, longest run, quality sessions, hours and sessions per sport. Also readiness
     at the start and end of the week, that week's coaching-history entries, and a
@@ -744,10 +750,31 @@ def record_css_test(t400: str, t200: str, date: str | None = None, note: str | N
     return _history_call(lambda conn: swim.record_css(conn, t400, t200, date, note))
 
 
+@write_tool(idempotent=True, open_world=False)
+def session_review(start: str | None = None, end: str | None = None, apply: bool = False) -> str:
+    """How the [TP] quality runs went (default: the last 14 days): the workout's steps matched to
+    the watch's laps; per rep pace vs the target range (or HR vs a bpm range) and whether it was
+    completed; per session completion, share of reps on target, pace bias, fade, HR drift and a
+    decision: advance, or repeat (with reasons). Missed sessions count as repeat. apply=true
+    saves a hold for each repeat so the season plan's next session of that type repeats the
+    step instead of advancing (the Sunday review does this automatically). Also returns a pace
+    flag when reps ran off the range in the same direction twice in a row."""
+    def run(conn):
+        last = end or date.today().isoformat()
+        first = start or (date.fromisoformat(last) - timedelta(days=13)).isoformat()
+        found = execution.reviews(conn, first, last)
+        result = {"start": first, "end": last, "sessions": found,
+                  "pace_flag": execution.pace_bias(found, history.rules(conn))}
+        if apply:
+            result["holds_added"] = execution.apply_holds(conn, found)
+        return result
+    return _history_call(run)
+
+
 @write_tool(read_only=True)
 def season_progress() -> str:
     """Is the plan working? For the weekly review or each lighter week: run km of the last 4
-    weeks vs their season targets, [CP] sessions completed vs missed, current VDOT vs the
+    weeks vs their season targets, [TP] sessions completed vs missed, current VDOT vs the
     straight line from the starting VDOT to the goal, the checkpoint time trials (expected
     result, and the actual one found in the synced runs), easy pace at the same HR, swim pace
     and SWOLF, days since the last CSS test, readiness. Each finding is a flag (ok, watch,
@@ -793,6 +820,123 @@ def start_season_plan(peak_run_km: float | None = None, start_continuous_swim_m:
                                 f"{anchor['start_run_km']} km/week to a {anchor['peak_run_km']} km peak.")
         return result
     return _history_call(run)
+
+
+def _current_vdot() -> float | None:
+    paces = coach.current_paces()
+    return paces.get("vdot") if paces else None
+
+
+@write_tool(read_only=True)
+def rolling_plan(start: str | None = None, weeks: int | None = None) -> str:
+    """The rolling plan (docs/rolling-plan.md): every workout from this week to race day,
+    stored on the server and not yet on Garmin unless status is published. Per week: the
+    season target, planned run km, and each workout with date, sport, kind, name, status
+    (draft, proposed, published, done, skipped), origin (generator, review, agent, athlete),
+    why it changed, estimated minutes and km, a step summary and the full spec. start
+    (YYYY-MM-DD, default this week) and weeks narrow the list."""
+    from garmin_ai.coaching import rolling
+    return _history_call(lambda conn: rolling.plan(conn, start, weeks))
+
+
+@write_tool(idempotent=True, open_world=False)
+def regenerate_plan(trigger: str = "manual", dry_run: bool = True, note: str | None = None) -> str:
+    """Rebuild the rolling plan from the season plan for every week after the last week that
+    is on Garmin (this week and published weeks are never touched; weeks with a proposed
+    change are skipped). Workouts are placed with the profile's plan_schedule section (JSON,
+    e.g. {"long": "sat"}) and paced from the current fitness (5K prediction). trigger: start,
+    manual, css_test, race_result, vdot, profile or rules. dry_run=true (default) returns per
+    week what would be added, changed and removed; show it and save (dry_run=false) only after
+    the athlete agrees. Easy runs target the watch's heart rate zones (zone 1 floor to below
+    zone 3, e.g. Garmin's lactate threshold zones), read from Garmin when saving. Nothing is
+    sent to Garmin."""
+    from garmin_ai.coaching import rolling
+
+    def run(conn):
+        if not dry_run:
+            rolling.refresh_hr_zones(conn)
+        return rolling.regenerate(conn, trigger, _current_vdot(), dry_run, note=note)
+    return _history_call(run)
+
+
+@write_tool(idempotent=True, open_world=False)
+def roll_forward(week_start: str | None = None, save: bool = False) -> str:
+    """The weekly roll forward of the rolling plan (runs by itself after the Sunday review):
+    next week (or week_start) rebuilt from the season plan with the review's rules: capped at
+    last week's run km grown at the plan's rate (missed sessions are not made up), quality
+    swapped for easy running on red readiness, the optional session dropped on yellow. Returns
+    what would be added, changed and removed, the reason, readiness and flags that need the
+    athlete (pace bias, cautions: never changed in code). save=true also marks past workouts
+    done or skipped and stores the changes as a proposal for decide_proposal."""
+    from garmin_ai.coaching import rolling
+    return _history_call(lambda conn: rolling.roll_forward(conn, week_start, save=save))
+
+
+@write_tool(idempotent=False, open_world=False)
+def decide_proposal(week_start: str, approve: bool, note: str | None = None) -> str:
+    """Approve or reject the proposed changes for a week of the rolling plan (from roll_forward
+    or propose_week). Approve only after the athlete agreed; approved changes become the
+    week's drafts (in a week already on Garmin they are uploaded right away and removed
+    workouts are deleted), rejected ones are kept in the history as rejected."""
+    from garmin_ai.coaching import rolling
+    return _history_call(lambda conn: rolling.decide(conn, week_start, approve, note))
+
+
+@write_tool(idempotent=True, open_world=False)
+def propose_week(week_start: str, items: list[dict], reason: str, dry_run: bool = True,
+                 allow_errors: bool = False) -> str:
+    """Your version of a rolling-plan week, in upload_plan's item format ({date, workout,
+    session?}). It is checked with the coaching rules (dry_run=true shows errors, warnings and
+    the diff) and stored as a proposal (origin agent) that replaces any earlier proposal for
+    the week; decide_proposal approves it. For a week already on Garmin (a mid-week change:
+    sick, sore, missed) give today to Sunday only; earlier days stay as they are, and
+    approving updates Garmin. reason: 1-2 sentences."""
+    from garmin_ai.coaching import rolling
+    return _history_call(lambda conn: rolling.propose_week(conn, week_start, items, reason, dry_run, allow_errors))
+
+
+@write_tool(idempotent=True)
+def publish_week(week_start: str, dry_run: bool = True, allow_errors: bool = False) -> str:
+    """Send a rolling-plan week's drafts to Garmin (upload_plan) and mark them published.
+    Refused while a proposal for the week is waiting. dry_run=true (default) validates and
+    lists the workouts; publish only after the athlete says OK."""
+    from garmin_ai.coaching import rolling
+    try:
+        return _history_call(lambda conn: rolling.publish(conn, week_start, dry_run, allow_errors))
+    except Exception as error:  # Garmin HTTP errors and the like
+        return f"Error: Garmin Connect request failed: {error}"
+
+
+@write_tool(read_only=True)
+def plan_drift(start: str | None = None, end: str | None = None) -> str:
+    """Is the plan's algorithm working? From the rolling plan's history (first draft, every
+    change and why, what was published, done or skipped), per Monday week from start to end
+    (YYYY-MM-DD, default the last 12 weeks): first-draft vs published km and quality, km run,
+    done/skipped, the proposal and its outcome; per rule (cap, readiness_red, readiness_yellow,
+    season_update, regenerate, coach) proposals approved and rejected; per kind done vs
+    skipped; session-review holds; and patterns with the setting each points to. Use it to
+    discuss changing a rule with the athlete; never change rules without their OK."""
+    from garmin_ai.coaching import rolling
+    return _history_call(lambda conn: rolling.drift(conn, start, end))
+
+
+@write_tool(idempotent=True, open_world=False)
+def adopt_week(week_start: str, dry_run: bool = True) -> str:
+    """Bring a week that was planned before the rolling plan (its [TP] workouts already on
+    Garmin) into the plan unchanged, so the Sunday review, mid-week changes and the drift report
+    cover it. dry_run=true (default) lists what would be adopted and which workouts are in
+    sports kept off the watch (take those off with keep_off_watch after the athlete's OK)."""
+    from garmin_ai.coaching import rolling
+    return _history_call(lambda conn: rolling.adopt_week(conn, week_start, dry_run))
+
+
+@write_tool(idempotent=True)
+def keep_off_watch(week_start: str, dry_run: bool = True) -> str:
+    """Delete from Garmin a rolling-plan week's workouts in sports kept off the watch
+    (rules rolling.watch_sports, e.g. gym logged in Hevy), from today on; the plan keeps them as
+    plan-only reminders. dry_run=true (default) lists them; run for real after the athlete's OK."""
+    from garmin_ai.coaching import rolling
+    return _history_call(lambda conn: rolling.keep_off_watch(conn, week_start, dry_run))
 
 
 @write_tool(open_world=False)

@@ -152,7 +152,12 @@ def set_profile(conn, section: str, content: str | None, reason: str | None = No
         conn.execute("DELETE FROM coach_profile WHERE section = ?", (key,))
     add_entry(conn, "profile", reason or f"Profile section {key} {'updated' if new else 'removed'}.",
               details={"section": key, "previous": old, "new": new})
-    return {"section": key, "changed": True, "previous": old, "content": new}
+    from garmin_ai.coaching import rolling  # the rolling plan follows the profile it is built from
+    regenerated = rolling.on_profile_change(conn, key)
+    result = {"section": key, "changed": True, "previous": old, "content": new}
+    if regenerated:
+        result["rolling_plan"] = regenerated["counts"]
+    return result
 
 
 def _merge(base: dict, extra: dict) -> dict:

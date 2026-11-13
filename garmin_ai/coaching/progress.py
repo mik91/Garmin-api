@@ -2,7 +2,7 @@
 
 Compares the season plan with what happened:
 - volume: run km of the last 4 complete weeks vs their targets;
-- completion: [CP] sessions completed vs missed in those weeks;
+- completion: [TP] sessions completed vs missed in those weeks;
 - fitness: current VDOT vs the straight line from the starting VDOT to the goal VDOT, and the
   checkpoint time trials (expected vs actual, read from the synced runs);
 - trends: easy pace at the same HR, swim pace and SWOLF, CSS test age, readiness.
@@ -13,7 +13,7 @@ from __future__ import annotations
 from datetime import date, timedelta
 
 from garmin_ai import workouts
-from garmin_ai.coaching import efficiency, history, review, season, swim
+from garmin_ai.coaching import efficiency, execution, history, review, season, swim
 from garmin_ai.coaching.readiness import assess_readiness
 
 
@@ -152,6 +152,25 @@ def progress(conn, today: date | None = None) -> dict:
     elif css_age > 63:
         flag("watch", "swim", f"Last CSS test was {css_age} days ago: retest (every 6-8 weeks).")
 
+    # --- quality sessions: how they went (last 3 weeks) -------------------------------------
+    since = (today - timedelta(days=today.weekday()) - timedelta(days=14)).isoformat()
+    try:
+        sessions_found = [s for s in execution.reviews(conn, since, today.isoformat(), today=today)
+                          if s.get("status") != "upcoming"]
+    except Exception:  # never let a session parse break the weekly review
+        sessions_found = []
+    repeats = [s for s in sessions_found if s.get("decision") == "repeat"]
+    advanced = [s for s in sessions_found if s.get("decision") == "advance"]
+    if repeats:
+        last = repeats[-1]
+        flag("watch", "sessions", f"{last['name']} ({last['date']}): repeat the step: "
+                                  f"{'; '.join(last.get('reasons') or [])}.")
+    elif advanced:
+        flag("ok", "sessions", f"{len(advanced)} quality session(s) done and on target in 3 weeks.")
+    bias = execution.pace_bias(sessions_found, rules)
+    if bias:
+        flag("watch", "sessions", bias["message"])
+
     ready = assess_readiness(history.daily_rows(conn, today.isoformat()), today.isoformat(), [], rules)
     if ready["status"] in ("yellow", "red"):
         flag("watch" if ready["status"] == "yellow" else "act", "readiness",
@@ -172,6 +191,9 @@ def progress(conn, today: date | None = None) -> dict:
                          if corrected.get("windows") else {})},
         "swim": {**swim_summary, "css_tests": len(tests), "days_since_css": css_age},
         "readiness": {"status": ready["status"], "points": ready["points"]},
+        "sessions": [{k: s.get(k) for k in ("date", "name", "kind", "status", "decision", "reasons",
+                                            "completion", "on_target_share", "pace_bias_s_per_km")}
+                     for s in sessions_found],
         "how_to_use": "Run weekly (or each lighter week). 'act' flags need a decision with the athlete; "
                       "log it with log_coaching_decision.",
     }

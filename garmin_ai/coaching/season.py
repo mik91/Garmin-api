@@ -22,6 +22,7 @@ being made up.
 from __future__ import annotations
 
 import json
+import math
 import re
 from datetime import date, timedelta
 
@@ -128,9 +129,11 @@ def events(race: dict) -> list[dict]:
     return found
 
 
-def generate(anchor: dict, race: dict, rules: dict, css: float | None = None) -> list[dict]:
+def generate(anchor: dict, race: dict, rules: dict, css: float | None = None,
+             with_steps: bool = False) -> list[dict]:
     """All weeks from anchor["start_week"] to the race week. Pure: the same inputs give the same
-    plan. css (s/100 m, latest test) only turns swim set targets into paces."""
+    plan. css (s/100 m, latest test) only turns swim set targets into paces. with_steps keeps
+    each quality session's structured "steps" (for materialize.py)."""
     cfg = settings(rules)
     phases = phases_for(race, rules)
     race_day = date.fromisoformat(race["date"])
@@ -146,6 +149,10 @@ def generate(anchor: dict, race: dict, rules: dict, css: float | None = None) ->
     kinds = ("threshold", "vo2", "race_pace")
     steps, seen, formats = dict.fromkeys(kinds, 0), dict.fromkeys(kinds, 0), dict.fromkeys(kinds, 0)
     speed_count = long_count = sharpen_count = 0
+    # Holds from session reviews (execution.py): the next session of that type on or after
+    # from_week repeats its step instead of advancing.
+    pending = {kind: sorted((h for h in anchor.get("holds") or [] if h.get("type") == kind),
+                            key=lambda h: h["from_week"]) for kind in kinds}
     multi = events(race)
     race_km = sum(e["km"] for e in multi) if multi else None
     rehearsals, last_rehearsal = 0, -2  # multi-event races: two rehearsal days in peak
@@ -162,24 +169,38 @@ def generate(anchor: dict, race: dict, rules: dict, css: float | None = None) ->
             long_km = round(min(normal_long, cap) * (0.0 if phase == "race_week" else factor), 1)
         else:
             near_peak = normal_km >= 0.8 * peak
+            # Back from a lighter week over two weeks: halfway, then the volume from before it.
+            # Growth resumes the week after (the validator caps a week at the recent peak or
+            # +10%, whichever is higher, so a week straight back above the old peak would fail).
+            returning = index > 0 and weeks[-1]["light"]
+            holding = index > 1 and weeks[-2]["light"] and not weeks[-1]["light"]
             # The anchor is the week before start_week, so week 1 already progresses.
-            if index > 0 and near_peak and since_light + 1 >= cfg["light_every"]:
+            if index > 0 and near_peak and since_light + 1 >= cfg["light_every"] and not returning:
                 light = True
-            else:
+            elif not (returning or holding):
                 pct = cfg["rebuild_pct"] if not near_peak else cfg["build_pct"]
                 phase_cap = peak * cfg["phase_peak_share"].get(phase, 1.0)
-                normal_km = max(min(normal_km, peak), min(phase_cap, round(normal_km * (1 + pct / 100), 1)))
+                normal_km = max(min(normal_km, peak), min(phase_cap, math.floor(normal_km * (1 + pct / 100) * 10 + 1e-6) / 10))
                 normal_long = min(cap, normal_long + cfg["long_step_km"],
                                   round(normal_km * cfg["long_share"], 1))
             km = round(normal_km * (1 - cfg["light_cut_pct"] / 100), 1) if light else normal_km
             long_km = (round(max(0, min(normal_long - cfg["long_light_cut_km"], km * cfg["long_share"])), 1)
                        if light else normal_long)
+            if returning:
+                km = math.floor((weeks[-1]["run_km"] + normal_km) / 2 * 10 + 1e-6) / 10
+                long_km = min(normal_long, math.floor(km * cfg["long_share"] * 10) / 10)
             since_light = 0 if light else since_light + 1
 
         def take(kind):
             session = sessions.build(kind, steps[kind], formats[kind], km, vdot, phase, light)
             formats[kind] += 1
             if not light:
+                if pending[kind] and pending[kind][0]["from_week"] <= monday.isoformat():
+                    # The step already advanced when the held session was planned: use the
+                    # previous step again and do not advance.
+                    hold = pending[kind].pop(0)
+                    again = sessions.build(kind, max(0, steps[kind] - 1), formats[kind] - 1, km, vdot, phase)
+                    return {**again, "repeat": f"Same step as {hold.get('date')}: {hold.get('reason')}"}
                 seen[kind] += 1
                 if seen[kind] % ADVANCE_EVERY.get(phase, {}).get(kind, 1) == 0:
                     steps[kind] += 1
@@ -250,6 +271,10 @@ def generate(anchor: dict, race: dict, rules: dict, css: float | None = None) ->
         monday += timedelta(days=7)
         index += 1
     add_checkpoints(weeks, anchor, race, cfg)
+    if not with_steps:
+        for week in weeks:
+            for session in week["quality"]:
+                session.pop("steps", None)
     return weeks
 
 
@@ -358,8 +383,10 @@ def plan(conn, weeks: int | None = None, start: str | None = None) -> dict:
 
 
 def targets_for(conn, monday: str, last_week_km: float | None = None) -> dict | None:
-    """The season target for one week, capped by what was actually run: never more than
-    last_week_km grown at the rebuild rate, so missed weeks slow the plan down."""
+    """The season target for one week, capped by what was actually run: last_week_km grown at
+    the rebuild rate, or at the plan's own growth from last week's target when that is larger
+    (coming back from a lighter week), so missed weeks slow the plan down but a lighter week
+    run as planned does not."""
     try:
         race, saved = a_race(conn), anchor(conn)
     except Exception:
@@ -367,13 +394,16 @@ def targets_for(conn, monday: str, last_week_km: float | None = None) -> dict | 
     if not race or not saved:
         return None
     rules = history.rules(conn)
-    week = next((w for w in generate(saved, race, rules, swim.latest_css(conn))
-                 if w["week_start"] == monday), None)
-    if not week:
+    weeks = generate(saved, race, rules, swim.latest_css(conn))
+    index = next((i for i, w in enumerate(weeks) if w["week_start"] == monday), None)
+    if index is None:
         return None
-    week = dict(week)
+    week = dict(weeks[index])
     if last_week_km and week["phase"] not in ("taper", "race_week") and not week["light"]:
-        cap = round(last_week_km * (1 + settings(rules)["rebuild_pct"] / 100), 1)
+        growth = 1 + settings(rules)["rebuild_pct"] / 100
+        if index > 0 and weeks[index - 1]["run_km"]:
+            growth = max(growth, week["run_km"] / weeks[index - 1]["run_km"])
+        cap = math.floor(last_week_km * growth * 10 + 1e-6) / 10
         if cap < week["run_km"]:
             week.update(planned_run_km=week["run_km"], run_km=cap,
                         note=f"Capped at {cap} km: last week was {last_week_km} km.")

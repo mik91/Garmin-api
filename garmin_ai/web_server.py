@@ -29,6 +29,7 @@ from starlette.responses import HTMLResponse, PlainTextResponse, RedirectRespons
 from starlette.routing import Mount, Route
 
 from garmin_ai import coach, config, connections, hevy, web_dashboard
+from garmin_ai.coaching import rolling
 from garmin_ai.discoveries import recovery_observations, run_observations
 from garmin_ai.goal_context import build_goal_context
 
@@ -96,9 +97,13 @@ POST_ACTIONS = {
     "/api/connections/garmin-mfa": (connections, "garmin_mfa"),
     "/api/connections/garmin-logout": (connections, "garmin_logout"),
     "/api/plan/move": (coach, "move_request"),
+    "/api/rolling-plan/approve": (rolling, "approve_request"),
+    "/api/rolling-plan/reject": (rolling, "reject_request"),
+    "/api/rolling-plan/publish": (rolling, "publish_request"),
 }
 # The only writes an OAuth token (the mobile app) may make; everything else stays read-only.
-TOKEN_POST_PATHS = {"/api/plan/move"}
+TOKEN_POST_PATHS = {"/api/plan/move", "/api/rolling-plan/approve", "/api/rolling-plan/reject",
+                    "/api/rolling-plan/publish"}
 GET_ACTIONS = {
     "/api/dashboard": lambda query: web_dashboard.payload(query),
     "/api/activity-raw": lambda query: web_dashboard.activity_raw(query),
@@ -109,7 +114,31 @@ GET_ACTIONS = {
     "/api/strength/exercise": lambda query: hevy.exercise_progress(query),
     "/api/plan": lambda query: coach.plan_payload(query),
     "/api/review": lambda query: web_dashboard.review_payload(query),
+    "/api/rolling-plan": lambda query: _rolling_plan(query),
+    "/api/rolling-plan/drift": lambda query: rolling.drift_request(query),
 }
+
+
+def _rolling_plan(query) -> dict:
+    """GET /api/rolling-plan?start=YYYY-MM-DD&weeks=N: the stored plan to race day."""
+    from datetime import date
+    from garmin_ai import db
+    from garmin_ai.coaching import history, rolling
+    start = (query.get("start") or [None])[0]
+    weeks = (query.get("weeks") or [None])[0]
+    try:
+        if start:
+            date.fromisoformat(start)
+        weeks = int(weeks) if weeks else None
+    except ValueError:
+        raise ValueError("start must be YYYY-MM-DD and weeks a number.") from None
+    if weeks is not None and not 1 <= weeks <= 60:
+        raise ValueError("weeks must be 1-60.")
+    with db.get_connection() as conn:
+        try:
+            return rolling.plan(conn, start, weeks)
+        except history.HistoryError as error:
+            raise ValueError(str(error)) from None
 
 
 async def api_post(request: Request):

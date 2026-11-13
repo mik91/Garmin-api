@@ -114,7 +114,7 @@ class CoachingHistoryTests(unittest.TestCase):
         entries = json.loads(mcp_server.coaching_history())
         self.assertEqual(len(entries), 1)
         self.assertEqual((entries[0]["kind"], entries[0]["week_start"]), ("upload", "2026-11-16"))
-        self.assertIn("[CP] Easy", entries[0]["planned"])
+        self.assertIn("[TP] Easy", entries[0]["planned"])
 
 
 class RegistrationTests(unittest.TestCase):

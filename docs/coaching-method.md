@@ -1,5 +1,8 @@
 # Endurance coach: method (agent-agnostic)
 
+The reasons behind each rule, and how they compare with established training methods, are in
+[coaching-principles.md](coaching-principles.md).
+
 Any agent (Claude, Codex, Cursor, ...) can follow this. A short version is sent to every MCP
 client as the server's instructions (`INSTRUCTIONS` in `garmin_ai/mcp_server.py`). It needs:
 1. **Tools**: the Garmin MCP server. Use the hosted connector (`/mcp`): it has the workout
@@ -35,7 +38,7 @@ Run this when asked to "plan next week", and again after any missed session, ill
    generated in code from anchors saved once (`start_season_plan`); a week's target is
    capped by what was actually run the week before, so missed weeks slow the plan down.
 6. **Validate and dry run.** `upload_plan(dry_run=true)` checks every week it touches against
-   the rules, with the [CP] workouts already scheduled that week. Minutes, km and intensity
+   the rules, with the [TP] workouts already scheduled that week. Minutes, km and intensity
    come from the steps; add `session` hints (`slot: "midday"`, `kind: "long"`, ...) where the
    steps cannot show it. Fix every error. Show warnings to the athlete. A conservative choice
    always beats a borderline one. (`validate_week_plan` runs the same checks on a draft that
@@ -65,6 +68,15 @@ Run this when asked to "plan next week", and again after any missed session, ill
   only flags it when a change is bigger than its margin.
 - **The algorithm:** a correction made twice becomes a rule, profile setting or test.
 
+### How quality sessions went
+`session_review` matches each [TP] quality run to the watch's laps (`wktStepIndex`): per rep
+pace vs the range and completion; per session pace bias, fade (second half vs first) and HR
+drift (from rep 2, reps of 3 min+). Decision: advance, or repeat the step. The Sunday review
+saves a hold for each repeat, so the next session of that type repeats its step instead of
+advancing (the plan only gets more cautious automatically). Paces are not changed
+automatically: two sessions in a row off the range in one direction raise a flag, and a
+checkpoint or race settles the paces. Thresholds: `rules.json` "execution".
+
 ## Swimming
 - Progress weekly volume (+6%, cap 5.5 km) and continuous distance (+100 m, 400 m -> 2000 m),
   not the length of one long session. Base: technique and continuous swims; build: CSS sets
@@ -76,7 +88,7 @@ Run this when asked to "plan next week", and again after any missed session, ill
 
 ## Hard rules
 - Ask before: adding a session, changing a goal, skipping a lighter week, moving the long-run day.
-- Only change workouts this system created ([CP]); never touch other apps' workouts. Tell the
+- Only change workouts this system created ([TP]); never touch other apps' workouts. Tell the
   athlete when a day already has one.
 - Mid-week change (sick/tired/missed/sore): do not make up missed sessions. Adjust the rest of
   the week, dry-run, show the diff, upload after OK, log an `adjustment`. Pain that changes how
